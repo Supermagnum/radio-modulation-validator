@@ -1,0 +1,11 @@
+{
+  "class_names": [
+    "AM",
+    "FM",
+    "FSK",
+    "PSK",
+    "QAM",
+    "PAM"
+  ],
+  "mode": "family"
+}

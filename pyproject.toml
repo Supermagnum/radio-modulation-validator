@@ -1,0 +1,110 @@
+[project]
+name = "radio-modulation-validator"
+version = "0.1.0"
+description = "Validate AI-generated GNU Radio OOT modules by classifying IQ samples against known modulation types"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "radio-modulation-validator contributors" }]
+dependencies = [
+    "typer[all]>=0.12.0",
+    "rich>=13.7.0",
+    "numpy>=1.26.0,<2",
+    "scipy>=1.11.0",
+    "onnxruntime>=1.17.0",
+    "h5py>=3.10.0",
+    "dataclasses-json>=0.6.0",
+    "httpx[http2]>=0.27.0",
+    "beautifulsoup4>=4.12.0",
+]
+
+[project.optional-dependencies]
+train = [
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
+    "onnx>=1.15.0",
+    "onnxscript>=0.1.0",
+    "scipy>=1.11.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.4.0",
+    "mypy>=1.8.0",
+    "types-requests",
+]
+
+[project.scripts]
+rmv = "rmv.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/example/radio-modulation-validator"
+Documentation = "https://github.com/example/radio-modulation-validator#readme"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rmv"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+    "/checksums.sha256",
+    "/models",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "TCH",
+]
+ignore = ["N806", "N803"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+packages = ["rmv"]
+mypy_path = "src"
+exclude = ["tests/fixtures/"]
+
+[[tool.mypy.overrides]]
+module = [
+    "onnxruntime.*",
+    "torch.*",
+    "torchvision.*",
+    "onnx.*",
+    "h5py.*",
+    "httpx.*",
+    "bs4.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-ra -q"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.4.0",
+    "mypy>=1.8.0",
+]

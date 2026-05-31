@@ -1,0 +1,78 @@
+# Training datasets
+*.pkl
+*.hdf5
+*.h5
+*.mat
+data/
+datasets/
+datasets/**
+datasets/synthetic/
+training_data/
+*.tar.bz2
+*.tar.gz
+signal_record.txt
+signal_record_first_20000.txt
+
+# CSPB batch files in data directories
+data/**/*.bin
+datasets/**/*.bin
+training_data/**/*.bin
+
+# Dataset source directories
+radioml/
+hisarmod/
+cspb/
+raw_data/
+
+# Cached preprocessed data
+cache/
+.cache/
+*.npy
+!tests/fixtures/**/*.npy
+!tests/**/*.npy
+
+# Model weights during training
+*.pt
+*.pth
+checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.eggs/
+*.egg
+
+# GPU logs
+runs/
+tensorboard/
+
+# Local AI prompts (not part of the project)
+prompt2.md
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# uv
+uv.lock
+
+# Test artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Validation output (optional local runs)
+validation_results/**/*.json
+!validation_results/.gitkeep

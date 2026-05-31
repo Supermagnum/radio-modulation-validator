@@ -1,0 +1,6 @@
+# SHA-256 checksums for committed ONNX models.
+# Run: rmv checksum update
+# Verify: rmv checksum verify
+
+1194be6db9558d6f2b5fba8d7dd7107118c2f6b102ef205c235f6f0e1d644af7  family_classifier.onnx
+f4b0dd8bbe29f57910d9c4c601374b4a32fa02e6e38e9aa4cd14e4f98794de1b  order_classifier.onnx
