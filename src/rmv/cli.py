@@ -262,6 +262,11 @@ def export_quantised_cmd(
         help="Also convert to SpacemiT .nb (requires spacemit-npu-convert)",
     ),
     skip_verify: bool = typer.Option(False, "--skip-verify"),
+    no_order_dynamic_fallback: bool = typer.Option(
+        False,
+        "--no-order-dynamic-fallback",
+        help="Do not retry order classifier with dynamic INT8 if static QDQ fails verify",
+    ),
     checksums: Path = typer.Option(Path("checksums.sha256"), "--checksums"),
     seed: int | None = typer.Option(42, "--seed"),
 ) -> None:
@@ -284,6 +289,7 @@ def export_quantised_cmd(
             npu=npu,
             checksums_path=checksums,
             seed=seed,
+            order_dynamic_fallback=not no_order_dynamic_fallback,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         err_console.print(f"[red]{exc}[/]")

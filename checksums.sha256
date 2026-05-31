@@ -1,6 +1,8 @@
-# SHA-256 checksums for committed ONNX models.
+# SHA-256 checksums for models/*.onnx (FP32 and INT8).
 # Run: rmv checksum update
 # Verify: rmv checksum verify
 
 7dde56d73f460db9223ea1311813142ee0c1b11eac0d908c4532ab86572d7867  family_classifier.onnx
+8d76fbde4c21fd1d5ea319210e680423253bfb628cf63a499039d2e2f5b40db4  family_classifier_int8.onnx
 32b8f1b48dcef5769fa2442055550716075b0388c2b5d5dfea3ffcd810ec98c0  order_classifier.onnx
+d664806be62ec8a977144689d1be3bae35a778c1a9f83ca4526d9f6677046d0b  order_classifier_int8.onnx

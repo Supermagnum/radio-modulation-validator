@@ -70,11 +70,18 @@ models/
 
 ## Accuracy
 
-Static INT8 quantisation typically shifts top-1 agreement by under 2% versus FP32.
-`rmv export-quantised` compares FP32 and INT8 top-1 labels on the calibration set
-and fails if disagreement exceeds `--tolerance` (default 3.0%).
+The **family** classifier uses static QDQ INT8 (calibrated on synthetic IQ). The
+**order** classifier (43 classes) may fall back to **dynamic** weight-only INT8 if
+static QDQ exceeds `--tolerance` on the calibration set (typical static agreement ~86%,
+dynamic ~99% on the same data).
 
-If verification fails, increase `--calibration-chunks` to 1024 or 2048.
+`rmv export-quantised` compares FP32 and INT8 top-1 labels on the calibration set and
+fails if disagreement exceeds `--tolerance` (default 3.0%). Disable order fallback with
+`--no-order-dynamic-fallback`.
+
+If static order quantisation fails and you need static QDQ for NPU, increase
+`--calibration-chunks` or relax tolerance; NPU toolchains may require re-running
+`spacemit-npu-convert` on the K3 with device-specific calibration.
 
 ## Performance (K3 estimates)
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -21,6 +22,7 @@ from rmv.models_paths import FAMILY_STEM, ORDER_STEM, int8_output_path, resolve_
 logger = logging.getLogger(__name__)
 
 CALIBRATION_CHUNKS = 512
+QuantizationMode = Literal["static", "dynamic"]
 
 
 def load_calibration_data(
@@ -109,7 +111,24 @@ def quantise_model(
         weight_type=QuantType.QInt8,
     )
 
-    logger.info("Quantised model written to %s", output_path)
+    _log_size_change(onnx_path, output_path, "static INT8")
+
+
+def quantise_model_dynamic(onnx_path: Path, output_path: Path) -> None:
+    """Quantise weights to INT8 dynamically (no calibration); better for large order heads."""
+    from onnxruntime.quantization import QuantType, quantize_dynamic
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    quantize_dynamic(
+        model_input=str(onnx_path),
+        model_output=str(output_path),
+        weight_type=QuantType.QInt8,
+    )
+    _log_size_change(onnx_path, output_path, "dynamic INT8")
+
+
+def _log_size_change(onnx_path: Path, output_path: Path, label: str) -> None:
+    logger.info("Quantised (%s) model written to %s", label, output_path)
     if onnx_path.is_file() and output_path.is_file():
         logger.info(
             "Size: %.2f MB -> %.2f MB",
@@ -187,6 +206,62 @@ def _load_class_names(meta_path: Path) -> list[str]:
     return []
 
 
+def _quantise_and_verify(
+    stem: str,
+    meta_name: str,
+    fp32_path: Path,
+    int8_path: Path,
+    calibration: np.ndarray,
+    *,
+    mode: QuantizationMode,
+    tolerance_pct: float,
+    skip_verify: bool,
+    order_dynamic_fallback: bool,
+    models_dir: Path,
+) -> None:
+    """Quantise one model and verify; optionally fall back to dynamic quant for order."""
+    if mode == "static":
+        quantise_model(fp32_path, int8_path, calibration)
+    else:
+        quantise_model_dynamic(fp32_path, int8_path)
+
+    if skip_verify:
+        return
+
+    class_names = _load_class_names(models_dir / meta_name)
+    ok = verify_quantised_accuracy(
+        fp32_path,
+        int8_path,
+        calibration,
+        class_names,
+        tolerance_pct=tolerance_pct,
+    )
+    if ok:
+        return
+
+    if stem == ORDER_STEM and mode == "static" and order_dynamic_fallback:
+        logger.warning(
+            "Static INT8 failed verification for %s; retrying with dynamic weight quantisation.",
+            stem,
+        )
+        quantise_model_dynamic(fp32_path, int8_path)
+        ok = verify_quantised_accuracy(
+            fp32_path,
+            int8_path,
+            calibration,
+            class_names,
+            tolerance_pct=tolerance_pct,
+        )
+        if ok:
+            logger.info(
+                "Order classifier uses dynamic INT8 (NPU may require static QDQ export on device)."
+            )
+            return
+
+    msg = f"INT8 verification failed for {stem}"
+    raise RuntimeError(msg)
+
+
 def run_export_quantised(
     synthetic_path: Path,
     models_dir: Path,
@@ -198,6 +273,7 @@ def run_export_quantised(
     npu: bool = False,
     checksums_path: Path | None = None,
     seed: int | None = 42,
+    order_dynamic_fallback: bool = True,
 ) -> list[Path]:
     """Quantise family and order classifiers; optionally run NPU conversion."""
     calibration = load_calibration_data(
@@ -208,33 +284,30 @@ def run_export_quantised(
     )
 
     written: list[Path] = []
-    pairs = [
-        (FAMILY_STEM, "family_classifier.meta.json"),
-        (ORDER_STEM, "order_classifier.meta.json"),
+    specs: list[tuple[str, str, QuantizationMode]] = [
+        (FAMILY_STEM, "family_classifier.meta.json", "static"),
+        (ORDER_STEM, "order_classifier.meta.json", "static"),
     ]
 
-    for stem, meta_name in pairs:
+    for stem, meta_name, mode in specs:
         fp32_path = models_dir / f"{stem}.onnx"
         if not fp32_path.is_file():
             msg = f"FP32 model not found: {fp32_path}"
             raise FileNotFoundError(msg)
 
         int8_path = int8_output_path(models_dir, stem)
-        quantise_model(fp32_path, int8_path, calibration)
-
-        if not skip_verify:
-            class_names = _load_class_names(models_dir / meta_name)
-            ok = verify_quantised_accuracy(
-                fp32_path,
-                int8_path,
-                calibration,
-                class_names,
-                tolerance_pct=tolerance_pct,
-            )
-            if not ok:
-                msg = f"INT8 verification failed for {stem}"
-                raise RuntimeError(msg)
-
+        _quantise_and_verify(
+            stem,
+            meta_name,
+            fp32_path,
+            int8_path,
+            calibration,
+            mode=mode,
+            tolerance_pct=tolerance_pct,
+            skip_verify=skip_verify,
+            order_dynamic_fallback=order_dynamic_fallback,
+            models_dir=models_dir,
+        )
         written.append(int8_path)
 
     if npu:
