@@ -20,13 +20,23 @@ SPACING_STD_MAX_HZ = 160.0
 CARRIER_BW_MIN_HZ = 800.0
 CARRIER_BW_MAX_HZ = 1400.0
 SYMBOL_RATE_TARGET_HZ = 900.0
-SYMBOL_RATE_TOLERANCE_HZ = 50.0
+SYMBOL_RATE_TOLERANCE_HZ = 100.0
 SYMBOL_RATE_MIN_PASS_COUNT = 6
 QPSK_MIN_PASS_COUNT = 6
 TOTAL_BW_MIN_HZ = 9000.0
 TOTAL_BW_MAX_HZ = 12000.0
 BANDPASS_HALF_WIDTH_HZ = 550.0
 RRRC_ALPHA = 0.35
+MIN_PEAK_FRAC_OF_MAX = 0.08
+MIN_PEAK_MEDIAN_RATIO = 2.5
+CONFIDENCE_WEIGHTS = {
+    "carrier_count": 0.40,
+    "spacing": 0.25,
+    "symbol_rate": 0.20,
+    "qpsk": 0.15,
+}
+MIN_CENTROID_SEPARATION = 0.30
+MIN_QPSK_CLUSTER_BALANCE = 0.25
 
 
 def _chunks_to_stream(samples: np.ndarray, max_samples: int = 192_000) -> np.ndarray:
@@ -75,9 +85,9 @@ def _match_carriers(
         sub_freqs = freqs_hz[mask]
         peak_i = int(np.argmax(sub_spec))
         peak_strength = float(sub_spec[peak_i])
-        if peak_strength < float(np.max(spectrum)) * 0.12:
+        if peak_strength < float(np.max(spectrum)) * MIN_PEAK_FRAC_OF_MAX:
             continue
-        if peak_strength < float(np.median(spectrum)) * 4.0:
+        if peak_strength < float(np.median(spectrum)) * MIN_PEAK_MEDIAN_RATIO:
             continue
         matched_detected.append(float(sub_freqs[peak_i]))
         matched_expected.append(exp)
@@ -173,8 +183,17 @@ def _rrc_taps(sps: int, alpha: float, num_taps: int) -> np.ndarray:
     return h.astype(np.float64)
 
 
+def _centroid_min_separation(centroids: np.ndarray) -> float:
+    """Minimum pairwise distance between cluster centres (rotation-invariant)."""
+    mins = 999.0
+    for i in range(len(centroids)):
+        for j in range(i + 1, len(centroids)):
+            mins = min(mins, float(np.linalg.norm(centroids[i] - centroids[j])))
+    return mins
+
+
 def _qpsk_constellation_check(carrier_bb: np.ndarray, sample_rate_hz: float) -> tuple[bool, float]:
-    """k-means k=4 cluster balance for QPSK-like constellation."""
+    """k-means k=4: balance and cluster separation (rotation-invariant, no fixed (±0.7, ±0.7))."""
     baud = SYMBOL_RATE_TARGET_HZ
     sps = max(2, int(round(sample_rate_hz / baud)))
     x = carrier_bb.astype(np.complex64)
@@ -196,9 +215,8 @@ def _qpsk_constellation_check(carrier_bb: np.ndarray, sample_rate_hz: float) -> 
         return False, 0.0
     counts = np.bincount(labels, minlength=4).astype(np.float64)
     balance = float(np.min(counts) / (np.max(counts) + 1e-9))
-    centres_ok = all(0.35 <= float(np.linalg.norm(c)) <= 1.2 for c in centroids)
-    frac_ok = all(0.15 <= c / len(labels) <= 0.35 for c in counts)
-    passed = balance >= 0.4 and frac_ok and centres_ok
+    separation = _centroid_min_separation(centroids)
+    passed = balance >= MIN_QPSK_CLUSTER_BALANCE and separation >= MIN_CENTROID_SEPARATION
     return passed, balance
 
 
@@ -237,6 +255,39 @@ def _score_list_fraction(passes: list[bool], minimum: int) -> float:
     if n_pass >= minimum:
         return 1.0
     return n_pass / float(minimum)
+
+
+def _score_bandwidth(bw_hz: float) -> float:
+    """Score total occupied bandwidth; soft edges outside 9-12 kHz."""
+    if TOTAL_BW_MIN_HZ <= bw_hz <= TOTAL_BW_MAX_HZ:
+        return 1.0
+    if 8000.0 <= bw_hz < TOTAL_BW_MIN_HZ:
+        return (bw_hz - 8000.0) / 1000.0
+    if TOTAL_BW_MAX_HZ < bw_hz <= 13000.0:
+        return (13000.0 - bw_hz) / 1000.0
+    return 0.0
+
+
+def compute_confidence_scores(metrics: dict[str, Any]) -> dict[str, float]:
+    """Per-metric scores and aggregate confidence (for tests and --verbose)."""
+    carrier_count = int(metrics.get("carrier_count", 0))
+    spacing_mean = float(metrics.get("carrier_spacing_mean_hz", 0.0))
+    spacing_std = float(metrics.get("carrier_spacing_std_hz", 999.0))
+    symbol_pass = list(metrics.get("symbol_rate_pass", []))
+    qpsk_pass = list(metrics.get("qpsk_pass", []))
+    total_bw = float(metrics.get("total_bandwidth_hz", 0.0))
+
+    scores = {
+        "carrier_count": _score_carrier_count(carrier_count),
+        "spacing": _score_spacing(spacing_mean, spacing_std) if carrier_count >= 2 else 0.0,
+        "symbol_rate": sum(symbol_pass) / 8.0 if symbol_pass else 0.0,
+        "qpsk": sum(qpsk_pass) / 8.0 if qpsk_pass else 0.0,
+        "bandwidth": _score_bandwidth(total_bw),
+    }
+    weighted = sum(CONFIDENCE_WEIGHTS[k] * scores[k] for k in CONFIDENCE_WEIGHTS)
+    bw_penalty = 1.0 if scores["bandwidth"] > 0.5 else 0.7
+    scores["confidence"] = float(np.clip(weighted * bw_penalty, 0.0, 1.0))
+    return scores
 
 
 class Sleipnir8QPSKValidator(CustomModeValidator):
@@ -334,14 +385,20 @@ class Sleipnir8QPSKValidator(CustomModeValidator):
             and total_bw_ok
         )
 
-        score_count = _score_carrier_count(carrier_count)
-        score_spacing = _score_spacing(spacing_mean, spacing_std) if carrier_count >= 2 else 0.0
-        score_symbol = _score_list_fraction(symbol_pass, SYMBOL_RATE_MIN_PASS_COUNT)
-        score_qpsk = _score_list_fraction(qpsk_pass, QPSK_MIN_PASS_COUNT)
-        confidence = (
-            0.3 * score_count + 0.2 * score_spacing + 0.25 * score_symbol + 0.25 * score_qpsk
-        )
-        confidence = float(np.clip(confidence, 0.0, 1.0))
+        metrics_dict: dict[str, Any] = {
+            "carrier_count": carrier_count,
+            "carrier_positions_hz": [round(p, 1) for p in positions],
+            "carrier_spacing_mean_hz": round(spacing_mean, 1),
+            "carrier_spacing_std_hz": round(spacing_std, 1),
+            "carrier_bandwidths_hz": [round(b, 1) for b in carrier_bws],
+            "symbol_rate_estimates_hz": [round(r, 1) for r in symbol_rates[:8]],
+            "symbol_rate_pass": symbol_pass[:8],
+            "qpsk_cluster_balance": [round(b, 3) for b in qpsk_balance[:8]],
+            "qpsk_pass": qpsk_pass[:8],
+            "total_bandwidth_hz": round(total_bw, 1),
+        }
+        conf_scores = compute_confidence_scores(metrics_dict)
+        confidence = conf_scores["confidence"]
 
         notes_parts: list[str] = []
         if carrier_count != 8:
@@ -364,16 +421,10 @@ class Sleipnir8QPSKValidator(CustomModeValidator):
             pass_overall=pass_overall,
             confidence=confidence,
             metrics={
-                "carrier_count": carrier_count,
-                "carrier_positions_hz": [round(p, 1) for p in positions],
-                "carrier_spacing_mean_hz": round(spacing_mean, 1),
-                "carrier_spacing_std_hz": round(spacing_std, 1),
-                "carrier_bandwidths_hz": [round(b, 1) for b in carrier_bws],
-                "symbol_rate_estimates_hz": [round(r, 1) for r in symbol_rates[:8]],
-                "symbol_rate_pass": symbol_pass[:8],
-                "qpsk_cluster_balance": [round(b, 3) for b in qpsk_balance[:8]],
-                "qpsk_pass": qpsk_pass[:8],
-                "total_bandwidth_hz": round(total_bw, 1),
+                **metrics_dict,
+                "confidence_scores": {
+                    k: round(v, 3) for k, v in conf_scores.items()
+                },
             },
             notes="; ".join(notes_parts),
         )

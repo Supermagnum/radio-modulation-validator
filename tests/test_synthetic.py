@@ -11,6 +11,7 @@ import pytest
 from rmv.dataset.synthetic import (
     BROADCAST_FM_TAU,
     MODE_TO_CLASS,
+    PROTOCOL_4FSK_ORDERS,
     VARIANT_SPECS,
     aviation_carrier_to_sideband_ratio,
     generate_aviation_am_25k,
@@ -21,6 +22,7 @@ from rmv.dataset.synthetic import (
     measure_audio_bandwidth_hz,
     save_synthetic_dataset,
     validate_nbfm_params,
+    verify_4fsk_signal,
     verify_bandwidth,
 )
 from rmv.types import IQDataset
@@ -171,20 +173,110 @@ def test_source_field(tmp_path: Path, rng: np.random.Generator) -> None:
     assert loaded.samples.shape[1:] == (2, 1024)
 
 
-def test_no_qradiolink_import() -> None:
+OOT_MODULE_FORBIDDEN = (
+    "qradiolink",
+    "gr_qradiolink",
+    "packet_protocols",
+    "gr_packet_protocols",
+    "sleipnir",
+    "gr_sleipnir",
+)
+
+
+def test_no_oot_imports() -> None:
     source_path = Path(__file__).resolve().parents[1] / "src" / "rmv" / "dataset" / "synthetic.py"
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                assert "qradiolink" not in alias.name
+                name = alias.name.lower()
+                for forbidden in OOT_MODULE_FORBIDDEN:
+                    assert forbidden not in name
         elif isinstance(node, ast.ImportFrom) and node.module:
-            assert "qradiolink" not in node.module
+            mod = node.module.lower()
+            for forbidden in OOT_MODULE_FORBIDDEN:
+                assert forbidden not in mod
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            assert node.func.id != "qradiolink"
+            for forbidden in OOT_MODULE_FORBIDDEN:
+                assert forbidden not in node.func.id.lower()
         elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            if node.value.id == "qradiolink":
-                raise AssertionError("qradiolink attribute access in synthetic.py")
+            for forbidden in OOT_MODULE_FORBIDDEN:
+                if forbidden in node.value.id.lower():
+                    raise AssertionError(
+                        f"forbidden OOT attribute access in synthetic.py: {node.value.id}"
+                    )
+
+
+def _inst_freq_std_hz(chunks: np.ndarray, sample_rate_hz: float = 48000.0) -> float:
+    iq = chunks[:, 0, :] + 1j * chunks[:, 1, :]
+    phase = np.unwrap(np.angle(iq), axis=1)
+    inst_freq = np.diff(phase, axis=1) * sample_rate_hz / (2 * np.pi)
+    return float(inst_freq.std())
+
+
+def _envelope_variation(chunks: np.ndarray) -> float:
+    iq = chunks[:, 0, :] + 1j * chunks[:, 1, :]
+    envelope = np.abs(iq)
+    return float(envelope.std() / max(envelope.mean(), 1e-12))
+
+
+def test_dmr_inst_freq_range(rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        "DMR", 40, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    std = _inst_freq_std_hz(chunks)
+    assert 600.0 <= std <= 2500.0
+
+
+def test_m17_inst_freq_range(rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        "M17", 40, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    std = _inst_freq_std_hz(chunks)
+    assert 800.0 <= std <= 3000.0
+
+
+def test_nxdn_inst_freq_range(rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        "NXDN", 40, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    std = _inst_freq_std_hz(chunks)
+    assert 300.0 <= std <= 1500.0
+
+
+@pytest.mark.parametrize("class_name", sorted(PROTOCOL_4FSK_ORDERS))
+def test_4fsk_constant_envelope(class_name: str, rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        class_name, 30, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    assert _envelope_variation(chunks) < 0.10
+
+
+def test_dmr_vs_nxdn_different_symbol_rate(rng: np.random.Generator) -> None:
+    """4800 baud DMR has wider inst-freq modulation bandwidth than 2400 baud NXDN."""
+    dmr = generate_variant_chunks(
+        "DMR", 60, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    nxdn = generate_variant_chunks(
+        "NXDN", 60, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+
+    def inst_freq_modulation_bw_hz(chunks: np.ndarray, sample_rate_hz: float = 48000.0) -> float:
+        iq = chunks[:, 0, :] + 1j * chunks[:, 1, :]
+        phase = np.unwrap(np.angle(iq), axis=1)
+        inst = np.diff(phase, axis=1).reshape(-1) * sample_rate_hz / (2 * np.pi)
+        inst = inst - np.mean(inst)
+        spec = np.abs(np.fft.rfft(inst)) ** 2
+        freqs = np.fft.rfftfreq(len(inst), 1.0 / sample_rate_hz)
+        cum = np.cumsum(spec) / max(float(np.sum(spec)), 1e-12)
+        idx = int(np.searchsorted(cum, 0.9))
+        return float(freqs[min(idx, len(freqs) - 1)])
+
+    dmr_bw = inst_freq_modulation_bw_hz(dmr)
+    nxdn_bw = inst_freq_modulation_bw_hz(nxdn)
+    assert dmr_bw > nxdn_bw * 1.4
+    assert dmr_bw > 1500.0
+    assert nxdn_bw < 1300.0
 
 
 def test_generate_synthetic_class_names() -> None:

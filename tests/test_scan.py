@@ -225,6 +225,8 @@ def test_mode_table_coverage() -> None:
         assert spec.expected_order, f"missing order for {spec.mode_name}"
     assert "NBFM" in MODE_TABLE
     assert lookup_mode("DMR") is not None
+    assert lookup_mode("DMR").expected_order == "DMR"
+    assert lookup_mode("DMR").generation_method == "synthetic"
     assert lookup_mode("NBFM").expected_order == "NBFM_25"
 
 
@@ -575,6 +577,55 @@ def test_scan_iq_classifies_correctly(tmp_path: Path) -> None:
     result = run_validate_file(gen.iq_path, clf, threshold=0.70)
     assert result.family_pass is True
     assert result.predicted_family == "FM"
+
+
+def test_gmsk_reference_signal_metrics() -> None:
+    """GMSK scan reference must have FSK-like inst. freq and constant envelope."""
+    from rmv.scan.iq_generator import _gen_gmsk_numpy
+
+    sig = _gen_gmsk_numpy(bt=0.5)
+    phase = np.unwrap(np.angle(sig))
+    inst_freq = np.diff(phase) * 48000.0 / (2 * np.pi)
+    envelope = np.abs(sig)
+    env_ratio = float(envelope.std() / max(envelope.mean(), 1e-12))
+    # MSK at 4800 baud: peak deviation symbol_rate/4 = 1200 Hz
+    assert 300.0 <= float(inst_freq.std()) <= 1500.0
+    assert env_ratio < 0.05
+
+
+@pytest.mark.skipif(
+    not Path("models/order_classifier.onnx").is_file(),
+    reason="ONNX models not present",
+)
+def test_gmsk_scan_reference_classifies_as_fsk_not_psk(tmp_path: Path) -> None:
+    """4800 baud MSK/GMSK reference must be FSK family, not mistaken for PSK."""
+    from rmv.classifier import ModulationClassifier
+    from rmv.scan.iq_generator import (
+        _chunks_from_complex,
+        _gen_gmsk_scan_signal,
+        _write_iq_and_sidecar,
+    )
+    from rmv.validate import run_validate_file
+
+    signal, _, _ = _gen_gmsk_scan_signal("GMSK", use_gnuradio=False)
+    chunks = _chunks_from_complex(signal)
+    gen = _write_iq_and_sidecar(
+        tmp_path,
+        "mod_gmsk",
+        chunks,
+        expected_family="FSK",
+        expected_order="GMSK",
+        project_name="test",
+        generation_method="numpy",
+        gr_env_used="none",
+        notes="gmsk test",
+    )
+    clf = ModulationClassifier(Path("models"), verify_checksums=False)
+    result = run_validate_file(gen.iq_path, clf, threshold=0.70)
+    assert result.family_pass is True
+    assert result.predicted_family == "FSK"
+    assert result.predicted_order not in ("QPSK", "8PSK", "BPSK", "QAM16")
+    assert result.predicted_order in ("GMSK", "MSK", "CPFSK", "GFSK")
 
 
 @pytest.mark.skipif(

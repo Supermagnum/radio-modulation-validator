@@ -23,21 +23,26 @@
     "AM_AIR_833",
     "BPSK",
     "CPFSK",
+    "DMR",
     "DQPSK",
     "FM",
     "GFSK",
     "GMSK",
+    "M17",
     "MSK",
     "NBFM",
     "NBFM_25",
     "NBFM_50",
+    "NXDN",
     "OOK",
     "OQPSK",
     "PAM4",
     "QAM16",
     "QAM64",
     "QPSK",
-    "WBFM"
+    "WBFM",
+    "YSF",
+    "dPMR"
   ],
   "mode": "order"
 }

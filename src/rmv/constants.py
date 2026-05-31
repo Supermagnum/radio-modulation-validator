@@ -133,6 +133,11 @@ SYNTHETIC_CLASSES: list[str] = [
     "WBFM",
     "BPSK",
     "QPSK",
+    "DMR",
+    "M17",
+    "YSF",
+    "NXDN",
+    "dPMR",
 ]
 
 SYNTHETIC_TO_FAMILY: dict[str, str] = {
@@ -143,6 +148,11 @@ SYNTHETIC_TO_FAMILY: dict[str, str] = {
     "WBFM": "FM",
     "BPSK": "PSK",
     "QPSK": "PSK",
+    "DMR": "FSK",
+    "M17": "FSK",
+    "YSF": "FSK",
+    "NXDN": "FSK",
+    "dPMR": "FSK",
 }
 
 ORDER_CLASSES: list[str] = sorted(

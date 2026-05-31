@@ -11,6 +11,21 @@ Modes generated:
   BPSK       — GNU Radio digital.psk_mod, 8 sps @ 48 kHz
   QPSK       — GNU Radio digital.psk_mod, 8 sps @ 48 kHz
 
+4FSK protocol-accurate modes (numpy/scipy only, no OOT modules):
+  DMR    — ETSI TS 102 361-1, 4800 baud, +/-1944 Hz, RC alpha=0.2
+  M17    — M17 Project spec v1.0, 4800 baud, +/-2400 Hz, RRC beta=0.5
+  YSF    — TIA-102/Yaesu C4FM, 4800 baud, +/-2400 Hz, Gaussian BT=0.5
+  NXDN   — ICOM/Kenwood, 2400 baud, +/-1050 Hz, RC alpha=0.2
+  dPMR   — ETSI TS 102 490, 2400 baud, +/-1050 Hz, RC alpha=0.2
+
+Note: D-Star (GMSK BT=0.5, 4800 baud) is covered by the existing
+GMSK class and is not added separately.
+
+These are modulation-layer waveforms only. Protocol framing, sync
+words, FEC, and vocoders are NOT reproduced. This is intentional —
+the classifier validates modulation family and order, not protocol
+correctness.
+
 IMPORTANT: This module uses GNU Radio built-in blocks and numpy/scipy only.
 No OOT (out-of-tree) modules are used. This is intentional —
 OOT modules under validation cannot be used to generate reference
@@ -75,6 +90,11 @@ SyntheticMode = Literal[
     "wbfm",
     "bpsk",
     "qpsk",
+    "dmr",
+    "m17",
+    "ysf",
+    "nxdn",
+    "dpmr",
 ]
 
 MODE_TO_CLASS: dict[SyntheticMode, str] = {
@@ -85,6 +105,11 @@ MODE_TO_CLASS: dict[SyntheticMode, str] = {
     "wbfm": "WBFM",
     "bpsk": "BPSK",
     "qpsk": "QPSK",
+    "dmr": "DMR",
+    "m17": "M17",
+    "ysf": "YSF",
+    "nxdn": "NXDN",
+    "dpmr": "dPMR",
 }
 
 ALL_MODES: tuple[SyntheticMode, ...] = (
@@ -95,7 +120,14 @@ ALL_MODES: tuple[SyntheticMode, ...] = (
     "wbfm",
     "bpsk",
     "qpsk",
+    "dmr",
+    "m17",
+    "ysf",
+    "nxdn",
+    "dpmr",
 )
+
+PROTOCOL_4FSK_ORDERS: frozenset[str] = frozenset({"DMR", "M17", "YSF", "NXDN", "dPMR"})
 
 DEFAULT_PSK_SAMPLES_PER_SYMBOL = 8
 
@@ -105,7 +137,7 @@ class VariantSpec:
 
     class_name: str
     max_bandwidth_hz: float
-    kind: Literal["nbfm", "am_air", "wbfm", "psk"]
+    kind: Literal["nbfm", "am_air", "wbfm", "psk", "fsk4"]
     max_dev: float | None = None
     am_variant: Literal["25k", "833"] | None = None
     psk_order: int | None = None
@@ -119,6 +151,73 @@ VARIANT_SPECS: dict[str, VariantSpec] = {
     "WBFM": VariantSpec("WBFM", 200000.0, "wbfm", max_dev=75000.0),
     "BPSK": VariantSpec("BPSK", 12000.0, "psk", psk_order=2),
     "QPSK": VariantSpec("QPSK", 12000.0, "psk", psk_order=4),
+    "DMR": VariantSpec("DMR", 14000.0, "fsk4"),
+    "M17": VariantSpec("M17", 14000.0, "fsk4"),
+    "YSF": VariantSpec("YSF", 14000.0, "fsk4"),
+    "NXDN": VariantSpec("NXDN", 8000.0, "fsk4"),
+    "dPMR": VariantSpec("dPMR", 8000.0, "fsk4"),
+}
+
+
+@dataclass(frozen=True)
+class Fsk4ProtocolSpec:
+    """Per-protocol 4FSK modulation parameters."""
+
+    symbol_rate_hz: float
+    symbol_map: dict[int, float]
+    filter_type: Literal["rc", "rrc", "gauss"]
+    filter_param: float
+    filter_span: int
+    inner_dev_hz: float
+    outer_dev_hz: float
+
+
+FSK4_PROTOCOL_SPECS: dict[str, Fsk4ProtocolSpec] = {
+    "DMR": Fsk4ProtocolSpec(
+        4800.0,
+        {3: 1944.0, 2: 648.0, 0: -648.0, 1: -1944.0},
+        "rc",
+        0.2,
+        8,
+        648.0,
+        1944.0,
+    ),
+    "M17": Fsk4ProtocolSpec(
+        4800.0,
+        {1: 2400.0, 0: 800.0, 2: -800.0, 3: -2400.0},
+        "rrc",
+        0.5,
+        8,
+        800.0,
+        2400.0,
+    ),
+    "YSF": Fsk4ProtocolSpec(
+        4800.0,
+        {0: 2400.0, 1: 800.0, 3: -800.0, 2: -2400.0},
+        "gauss",
+        0.5,
+        4,
+        800.0,
+        2400.0,
+    ),
+    "NXDN": Fsk4ProtocolSpec(
+        2400.0,
+        {3: 1050.0, 2: 350.0, 0: -350.0, 1: -1050.0},
+        "rc",
+        0.2,
+        8,
+        350.0,
+        1050.0,
+    ),
+    "dPMR": Fsk4ProtocolSpec(
+        2400.0,
+        {3: 1050.0, 2: 350.0, 0: -350.0, 1: -1050.0},
+        "rc",
+        0.2,
+        8,
+        350.0,
+        1050.0,
+    ),
 }
 
 
@@ -158,14 +257,25 @@ def validate_nbfm_params(
             raise ValueError(msg)
 
 
-def add_awgn(signal: np.ndarray, snr_db: float) -> np.ndarray:
+def add_awgn(
+    signal: np.ndarray,
+    snr_db: float,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
     """Add complex AWGN at the given SNR (dB) relative to signal power."""
     signal_power = float(np.mean(np.abs(signal) ** 2))
     snr_linear = 10 ** (snr_db / 10.0)
     noise_power = signal_power / snr_linear
-    noise = np.sqrt(noise_power / 2) * (
-        np.random.randn(*signal.shape) + 1j * np.random.randn(*signal.shape)
-    )
+    scale = np.sqrt(noise_power / 2)
+    if rng is None:
+        noise = scale * (
+            np.random.randn(*signal.shape) + 1j * np.random.randn(*signal.shape)
+        )
+    else:
+        noise = scale * (
+            rng.standard_normal(signal.shape)
+            + 1j * rng.standard_normal(signal.shape)
+        )
     return (signal + noise).astype(np.complex64)
 
 
@@ -617,6 +727,173 @@ def _generate_aviation_am_chunks(
     return chunks
 
 
+def _raised_cosine_filter(
+    alpha: float,
+    span: int,
+    samples_per_symbol: int,
+) -> np.ndarray:
+    """Raised cosine FIR filter coefficients."""
+    n = span * samples_per_symbol
+    t = np.arange(-n // 2, n // 2 + 1, dtype=np.float64) / samples_per_symbol
+    eps = 1e-8
+    h = np.zeros(len(t), dtype=np.float64)
+    for i, ti in enumerate(t):
+        if abs(ti) < eps:
+            h[i] = 1.0
+        elif abs(abs(2 * alpha * ti) - 1.0) < eps:
+            h[i] = (np.pi / 4) * np.sinc(1 / (2 * alpha))
+        else:
+            h[i] = (
+                np.sinc(ti)
+                * np.cos(np.pi * alpha * ti)
+                / (1 - (2 * alpha * ti) ** 2)
+            )
+    return (h / h.sum()).astype(np.float64)
+
+
+def _root_raised_cosine_filter(
+    beta: float,
+    span: int,
+    samples_per_symbol: int,
+) -> np.ndarray:
+    """Root raised cosine FIR filter coefficients."""
+    n = span * samples_per_symbol
+    t = np.arange(-n // 2, n // 2 + 1, dtype=np.float64) / samples_per_symbol
+    eps = 1e-8
+    h = np.zeros(len(t), dtype=np.float64)
+    for i, ti in enumerate(t):
+        if abs(ti) < eps:
+            h[i] = 1.0 + beta * (4 / np.pi - 1)
+        elif abs(abs(4 * beta * ti) - 1.0) < eps:
+            h[i] = (beta / np.sqrt(2)) * (
+                (1 + 2 / np.pi) * np.sin(np.pi / (4 * beta))
+                + (1 - 2 / np.pi) * np.cos(np.pi / (4 * beta))
+            )
+        else:
+            h[i] = (
+                np.sin(np.pi * ti * (1 - beta))
+                + 4 * beta * ti * np.cos(np.pi * ti * (1 + beta))
+            ) / (np.pi * ti * (1 - (4 * beta * ti) ** 2))
+    return (h / h.sum()).astype(np.float64)
+
+
+def _gaussian_filter(
+    bt: float,
+    span: int,
+    samples_per_symbol: int,
+) -> np.ndarray:
+    """Gaussian FIR filter coefficients for GMSK/C4FM."""
+    n = span * samples_per_symbol
+    t = np.arange(-n // 2, n // 2 + 1, dtype=np.float64) / samples_per_symbol
+    c = np.sqrt(2 * np.pi**2 / np.log(2))
+    h = np.exp(-0.5 * (c * bt * t) ** 2)
+    return (h / h.sum()).astype(np.float64)
+
+
+def _fsk4_pulse_filter(proto: Fsk4ProtocolSpec, samples_per_symbol: int) -> np.ndarray:
+    if proto.filter_type == "rc":
+        return _raised_cosine_filter(
+            proto.filter_param, proto.filter_span, samples_per_symbol
+        )
+    if proto.filter_type == "rrc":
+        return _root_raised_cosine_filter(
+            proto.filter_param, proto.filter_span, samples_per_symbol
+        )
+    return _gaussian_filter(proto.filter_param, proto.filter_span, samples_per_symbol)
+
+
+def _generate_4fsk_chunk(
+    n_samples: int,
+    sample_rate_hz: float,
+    symbol_rate_hz: float,
+    symbol_map: dict[int, float],
+    pulse_filter: np.ndarray,
+    snr_db: float,
+    *,
+    freq_offset_hz: float = 0.0,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Generate one chunk of 4FSK IQ at baseband (complex64, length n_samples)."""
+    samples_per_symbol = int(round(sample_rate_hz / symbol_rate_hz))
+    n_symbols = (n_samples // samples_per_symbol) + len(pulse_filter)
+
+    symbols = rng.integers(0, 4, n_symbols)
+    freq_sequence = np.array([symbol_map[int(s)] for s in symbols], dtype=np.float64)
+    freq_upsampled = np.repeat(freq_sequence, samples_per_symbol)
+    freq_shaped = np.convolve(freq_upsampled, pulse_filter, mode="same")
+    freq_shaped += freq_offset_hz
+
+    phase = np.cumsum(2 * np.pi * freq_shaped / sample_rate_hz)
+    iq = np.exp(1j * phase).astype(np.complex64)
+    iq = iq[:n_samples]
+    return add_awgn(iq, snr_db, rng=rng)
+
+
+def verify_4fsk_signal(
+    chunks: np.ndarray,
+    expected_deviations: tuple[float, float],
+    mode_name: str,
+    sample_rate_hz: float = DEFAULT_QUAD_RATE_HZ,
+) -> None:
+    """Verify 4FSK instantaneous frequency and constant envelope."""
+    iq = chunks[:, 0, :] + 1j * chunks[:, 1, :]
+    phase = np.unwrap(np.angle(iq), axis=1)
+    inst_freq = np.diff(phase, axis=1) * sample_rate_hz / (2 * np.pi)
+
+    freq_std = float(inst_freq.std())
+    inner_dev, outer_dev = expected_deviations
+
+    if freq_std < inner_dev * 0.3:
+        msg = (
+            f"{mode_name}: inst_freq std {freq_std:.0f} Hz too low — "
+            f"signal may be unmodulated. Expected > {inner_dev * 0.3:.0f} Hz"
+        )
+        raise ValueError(msg)
+    if freq_std > outer_dev * 3.0:
+        msg = (
+            f"{mode_name}: inst_freq std {freq_std:.0f} Hz too high — "
+            f"check deviation parameters. Expected < {outer_dev * 3.0:.0f} Hz"
+        )
+        raise ValueError(msg)
+
+    envelope = np.abs(iq)
+    env_variation = float(envelope.std() / max(envelope.mean(), 1e-12))
+    if env_variation > 0.15:
+        msg = (
+            f"{mode_name}: envelope variation {env_variation:.3f} too high "
+            f"for FSK — signal has unexpected AM component"
+        )
+        raise ValueError(msg)
+
+
+def _generate_fsk4_protocol_chunk(
+    class_name: str,
+    *,
+    sample_rate_hz: float,
+    snr_db: float,
+    rng: np.random.Generator,
+    apply_channel: bool,
+) -> np.ndarray:
+    proto = FSK4_PROTOCOL_SPECS[class_name]
+    samples_per_symbol = int(round(sample_rate_hz / proto.symbol_rate_hz))
+    pulse_filter = _fsk4_pulse_filter(proto, samples_per_symbol)
+    freq_offset = 0.0
+    level_snr = snr_db
+    if apply_channel:
+        freq_offset = float(rng.uniform(-DEFAULT_FREQ_OFFSET_HZ, DEFAULT_FREQ_OFFSET_HZ))
+    iq = _generate_4fsk_chunk(
+        CHUNK_SAMPLES,
+        sample_rate_hz,
+        proto.symbol_rate_hz,
+        proto.symbol_map,
+        pulse_filter,
+        level_snr if apply_channel else 40.0,
+        freq_offset_hz=freq_offset,
+        rng=rng,
+    )
+    return normalise_unit_power(_complex_to_iq_chunk(iq))
+
+
 def generate_variant_chunks(
     class_name: str,
     n_chunks: int,
@@ -705,6 +982,17 @@ def generate_variant_chunks(
                 rng=gen,
                 apply_channel=apply_channel,
             )
+    elif spec.kind == "fsk4":
+        if class_name not in FSK4_PROTOCOL_SPECS:
+            raise ValueError(f"{class_name}: missing FSK4 protocol spec")
+        for i in range(n_chunks):
+            chunks[i] = _generate_fsk4_protocol_chunk(
+                class_name,
+                sample_rate_hz=sample_rate_hz,
+                snr_db=snr_db,
+                rng=gen,
+                apply_channel=apply_channel,
+            )
     else:
         raise ValueError(f"Unknown variant kind for {class_name}")
     return chunks
@@ -745,10 +1033,12 @@ def generate_synthetic(
                 rng=rng,
             )
             if verify:
+                # Bandwidth / 4FSK checks need clean IQ (no AWGN or freq offset).
+                # Using loop SNR with apply_channel=True makes noise fill the band.
                 ref_chunks = generate_variant_chunks(
                     class_name,
                     min(100, chunks_per_snr),
-                    snr_db=float(snr),
+                    snr_db=20.0,
                     sample_rate_hz=sample_rate_hz,
                     audio_rate_hz=audio_rate_hz,
                     use_gnuradio=use_gnuradio,
@@ -761,6 +1051,14 @@ def generate_synthetic(
                     spec.max_bandwidth_hz,
                     class_name,
                 )
+                if spec.kind == "fsk4":
+                    proto = FSK4_PROTOCOL_SPECS[class_name]
+                    verify_4fsk_signal(
+                        ref_chunks,
+                        (proto.inner_dev_hz, proto.outer_dev_hz),
+                        class_name,
+                        sample_rate_hz,
+                    )
             label = class_names.index(class_name)
             for i in range(chunks_per_snr):
                 labels_list.append(label)
@@ -803,8 +1101,9 @@ def save_synthetic_dataset(output_dir: Path, dataset: IQDataset) -> Path:
     return npz_path
 
 
-def load_synthetic(path: Path) -> IQDataset:
+def load_synthetic(path: Path | str) -> IQDataset:
     """Load IQDataset from synthetic.npz file or directory containing it."""
+    path = Path(path)
     if path.is_dir():
         npz_path = path / "synthetic.npz"
     else:

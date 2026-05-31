@@ -17,6 +17,7 @@ from rmv.plugins.sleipnir_8qpsk import (
     EXPECTED_CARRIER_HZ,
     DEFAULT_SAMPLE_RATE_HZ,
     Sleipnir8QPSKValidator,
+    compute_confidence_scores,
 )
 from rmv.validate import (
     build_validation_result_from_custom,
@@ -92,22 +93,51 @@ def test_plugin_registry_lists_sleipnir() -> None:
     assert plugin.mode_id == "sleipnir_8qpsk"
 
 
-def test_sleipnir_plugin_with_synthetic_signal() -> None:
-    samples = synth_multicarrier_chunks(EXPECTED_CARRIER_HZ, n_chunks=12, seed=1)
+def test_sleipnir_confidence_above_threshold() -> None:
+    samples = synth_multicarrier_chunks(EXPECTED_CARRIER_HZ, n_chunks=24, seed=1)
     plugin = Sleipnir8QPSKValidator()
     result = plugin.validate(samples, DEFAULT_SAMPLE_RATE_HZ, {})
     assert result.mode_id == "sleipnir_8qpsk"
     assert result.metrics["carrier_count"] == 8
     assert result.pass_overall is True
-    assert result.confidence >= 0.5
+    assert result.confidence >= 0.70
 
 
-def test_sleipnir_plugin_fails_on_single_carrier() -> None:
+def test_sleipnir_scan_reference_iq_passes(tmp_path: Path) -> None:
+    """Regression: scan-generated sleipnir reference IQ must pass the plugin."""
+    ref = Path(".scan_iq/gr-sleipnir/mod_sleipnir_8qpsk.iq")
+    if not ref.is_file():
+        pytest.skip("scan IQ not present (run rmv scan first)")
+    from rmv.iq_io import load_iq_chunks_from_path
+
+    chunks = load_iq_chunks_from_path(ref)
+    result = Sleipnir8QPSKValidator().validate(chunks, DEFAULT_SAMPLE_RATE_HZ, {})
+    assert result.pass_overall is True
+    assert result.confidence >= 0.70
+
+
+def test_sleipnir_single_carrier_fails() -> None:
     samples = synth_multicarrier_chunks([0.0], n_chunks=24, seed=2)
     plugin = Sleipnir8QPSKValidator()
     result = plugin.validate(samples, DEFAULT_SAMPLE_RATE_HZ, {})
     assert result.metrics["carrier_count"] != 8
     assert result.pass_overall is False
+
+
+def test_confidence_no_zero_collapse() -> None:
+    """One marginal metric must not drive confidence to near zero."""
+    scores = compute_confidence_scores(
+        {
+            "carrier_count": 8,
+            "carrier_spacing_mean_hz": 1300.0,
+            "carrier_spacing_std_hz": 90.0,
+            "symbol_rate_pass": [True] * 4 + [False] * 4,
+            "qpsk_pass": [True] * 8,
+            "total_bandwidth_hz": 10500.0,
+        }
+    )
+    assert scores["symbol_rate"] == 0.5
+    assert scores["confidence"] >= 0.65
 
 
 def test_sleipnir_plugin_fails_on_wrong_spacing() -> None:

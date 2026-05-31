@@ -15,8 +15,6 @@ from rmv.validate import run_validate_file
 
 logger = logging.getLogger(__name__)
 
-LOW_CONFIDENCE_WARN = 0.55
-
 
 @dataclass
 class Issue:
@@ -150,14 +148,14 @@ def run_validation(
             )
         else:
             passed += 1
-            if (
-                result.family_confidence < LOW_CONFIDENCE_WARN
-                or result.order_confidence < LOW_CONFIDENCE_WARN
-            ):
+            low_family = result.family_confidence < threshold
+            low_order = result.order_confidence < threshold
+            if low_family or low_order:
                 warn = (
-                    f"{gen.block_name}: pass with low confidence "
+                    f"{gen.block_name}: correct label, low confidence "
                     f"(family={result.family_confidence:.2f}, "
-                    f"order={result.order_confidence:.2f})"
+                    f"order={result.order_confidence:.2f}, "
+                    f"threshold={threshold:.2f})"
                 )
                 issues.append(Issue("warning", warn, gen.block_name))
                 db.add_issue(

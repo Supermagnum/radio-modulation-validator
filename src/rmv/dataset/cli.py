@@ -178,7 +178,11 @@ def dataset_generate_synthetic(
     modes: Optional[str] = typer.Option(
         None,
         "--modes",
-        help="Comma-separated modes (default: all): nbfm25,nbfm50,am_air_25k,am_air_833,wbfm,bpsk,qpsk",
+        help=(
+            "Comma-separated modes (default: all): "
+            "nbfm25,nbfm50,am_air_25k,am_air_833,wbfm,bpsk,qpsk,"
+            "dmr,m17,ysf,nxdn,dpmr"
+        ),
     ),
     chunks_per_snr: int = typer.Option(
         1000,

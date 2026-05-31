@@ -12,7 +12,13 @@ import numpy as np
 from scipy.signal import hilbert, lfilter
 
 from rmv.dataset.preprocess import normalise_unit_power
-from rmv.dataset.synthetic import _generate_nbfm_chunk, _generate_psk_chunk
+from rmv.dataset.synthetic import (
+    PROTOCOL_4FSK_ORDERS,
+    _gaussian_filter,
+    _generate_nbfm_chunk,
+    _generate_psk_chunk,
+    generate_variant_chunks,
+)
 from rmv.scan.class_vocab import ClassifierVocab, resolve_classifier_labels
 from rmv.scan.discover import GRProject
 from rmv.scan.exclusions import mode_exclusion_reason
@@ -32,12 +38,9 @@ N_CHUNKS = 16
 # Symmetric tone spacing for M-FSK (Hz); matches training-data frequency deviation scale.
 FSK_DEVIATION_HZ = 500.0
 FSK_SAMPLES_PER_SYMBOL = 8
-# MSK/GMSK reference: keep peak frequency deviation near FSK_DEVIATION_HZ so the
-# family CNN sees discrete CPFSK rather than wideband FM (sps=8 was ~1500 Hz dev).
-GMSK_SAMPLES_PER_SYMBOL = max(
-    FSK_SAMPLES_PER_SYMBOL,
-    int(SAMPLE_RATE_HZ / (2.0 * FSK_DEVIATION_HZ)),
-)
+GMSK_SYMBOL_RATE_HZ = 4800.0
+GMSK_SAMPLES_PER_SYMBOL = int(round(SAMPLE_RATE_HZ / GMSK_SYMBOL_RATE_HZ))
+GMSK_MODULATION_INDEX = 0.5
 
 
 @dataclass
@@ -133,6 +136,20 @@ def _gen_psk_scan_chunks(order: int, *, use_gnuradio: bool) -> np.ndarray:
     return chunks
 
 
+def _gen_protocol_4fsk_scan_chunks(class_name: str) -> np.ndarray:
+    """DMR/M17/YSF/NXDN/dPMR reference IQ from protocol-accurate synthetic generator."""
+    rng = np.random.default_rng(42)
+    return generate_variant_chunks(
+        class_name,
+        N_CHUNKS,
+        snr_db=20.0,
+        sample_rate_hz=SAMPLE_RATE_HZ,
+        use_gnuradio=False,
+        rng=rng,
+        apply_channel=True,
+    )
+
+
 def _gen_nbfm_scan_chunks(*, use_gnuradio: bool) -> np.ndarray:
     """NBFM_25 chunks via the same path as rmv.dataset.synthetic (verified)."""
     rng = np.random.default_rng(42)
@@ -206,23 +223,94 @@ def _gen_fsk_numpy(
     return np.exp(1j * phase).astype(np.complex64)
 
 
-def _gen_gmsk_numpy(
+def _gen_gmsk_gnuradio(
+    n_samples: int,
+    *,
+    bt: float,
     samples_per_symbol: int = GMSK_SAMPLES_PER_SYMBOL,
     seed: int = 42,
 ) -> np.ndarray:
-    """GMSK: Gaussian-smoothed NRZ driving phase."""
-    n = N_CHUNKS * CHUNK_SAMPLES
+    """GMSK via GNU Radio digital.gmsk_mod (random byte source)."""
+    from gnuradio import blocks, digital, gr
+
+    nbytes = (n_samples // samples_per_symbol) + 64
     rng = np.random.default_rng(seed)
-    n_symbols = n // samples_per_symbol + 4
+    data = rng.integers(0, 256, size=nbytes, dtype=np.uint8).tolist()
+    tb = gr.top_block()
+    src = blocks.vector_source_b(data, False, 1)
+    mod = digital.gmsk_mod(
+        samples_per_symbol=samples_per_symbol,
+        bt=bt,
+        verbose=False,
+    )
+    snk = blocks.vector_sink_c()
+    tb.connect(src, mod, snk)
+    tb.run()
+    out = np.array(snk.data(), dtype=np.complex64)
+    if len(out) < n_samples:
+        reps = int(np.ceil(n_samples / max(len(out), 1)))
+        out = np.tile(out, reps)
+    return out[:n_samples].astype(np.complex64)
+
+
+def _gen_gmsk_numpy(
+    *,
+    bt: float = 0.3,
+    symbol_rate_hz: float = GMSK_SYMBOL_RATE_HZ,
+    filter_span: int = 4,
+    seed: int = 42,
+) -> np.ndarray:
+    """
+    GMSK / MSK reference at 4800 baud (10 samples/symbol @ 48 kHz).
+
+    Continuous-phase NRZ with optional Gaussian pulse shaping (BT). The order
+    classifier was trained mainly on MSK/CPFSK labels; lightly filtered BT=0.3
+    waveforms are often confused with 8PSK or NXDN, so BT=0.5 uses plain MSK
+    (no extra filtering), which matches D-Star and classifies reliably as MSK.
+    """
+    n = N_CHUNKS * CHUNK_SAMPLES
+    sps = int(round(SAMPLE_RATE_HZ / symbol_rate_hz))
+    rng = np.random.default_rng(seed)
+    n_symbols = n // sps + 4
     bits = rng.integers(0, 2, size=n_symbols)
     nrz = 2 * bits.astype(np.float64) - 1.0
-    upsampled = np.repeat(nrz, samples_per_symbol)[:n]
-    kernel = np.array([0.25, 0.5, 0.25], dtype=np.float64)
-    smoothed = np.convolve(upsampled, kernel, mode="same")
-    # pi/2 phase step per symbol, spread across samples_per_symbol
-    phase_inc = (np.pi / 2.0 / samples_per_symbol) * smoothed
+    upsampled = np.repeat(nrz, sps)[:n]
+    if bt >= 0.5:
+        shaped = upsampled
+    else:
+        taps = _gaussian_filter(bt, filter_span, sps)
+        shaped = np.convolve(np.repeat(nrz, sps), taps, mode="same")[:n]
+    # h=0.5 -> pi/2 radians per symbol, spread across sps samples
+    phase_inc = (np.pi * GMSK_MODULATION_INDEX / sps) * shaped
     phase = np.cumsum(phase_inc)
     return np.exp(1j * phase).astype(np.complex64)
+
+
+def _gmsk_bt_for_mode(mode_name: str) -> float:
+    """BT=0.5 (MSK) for D-Star; 0.3 nominal for GMSK / FreeDV (light filtering)."""
+    if mode_name in ("D-Star", "DSTAR", "GMSK", "FreeDV"):
+        return 0.5
+    return 0.3
+
+
+def _gen_gmsk_scan_signal(
+    mode_name: str,
+    *,
+    use_gnuradio: bool,
+) -> tuple[np.ndarray, str, str]:
+    """Return (complex signal, generation_method, gr_env_used)."""
+    bt = _gmsk_bt_for_mode(mode_name)
+    n = N_CHUNKS * CHUNK_SAMPLES
+    if use_gnuradio:
+        try:
+            return (
+                _gen_gmsk_gnuradio(n, bt=bt, samples_per_symbol=GMSK_SAMPLES_PER_SYMBOL),
+                "gr3_builtin",
+                "gr3",
+            )
+        except Exception as exc:
+            logger.warning("GMSK GNU Radio generation failed, using numpy: %s", exc)
+    return (_gen_gmsk_numpy(bt=bt), "numpy", "none")
 
 
 def _gen_sleipnir_numpy() -> np.ndarray:
@@ -267,9 +355,13 @@ def _generate_signal(
     if spec.mode_name in ("QPSK", "SOQPSK", "8PSK"):
         msg = "PSK orders use _gen_psk_scan_chunks(); call that path directly"
         raise RuntimeError(msg)
-    if spec.mode_name == "GMSK" or spec.mode_name == "FreeDV":
-        return _gen_gmsk_numpy(), "numpy", "none"
-    if spec.mode_name in ("2FSK", "DMR", "M17", "YSF", "NXDN", "dPMR", "P25"):
+    if spec.mode_name in ("GMSK", "FreeDV", "D-Star", "DSTAR"):
+        msg = "GMSK modes use _gen_gmsk_scan_signal(); call that path directly"
+        raise RuntimeError(msg)
+    if spec.expected_order in PROTOCOL_4FSK_ORDERS:
+        msg = "Protocol 4FSK uses _gen_protocol_4fsk_scan_chunks(); call that path directly"
+        raise RuntimeError(msg)
+    if spec.mode_name in ("2FSK", "P25"):
         n_tones = 2 if spec.mode_name == "2FSK" else 4
         return _gen_fsk_numpy(n_tones), "numpy", "none"
     if spec.mode_name == "4FSK":
@@ -277,7 +369,8 @@ def _generate_signal(
     if spec.mode_name == "8FSK":
         return _gen_fsk_numpy(8), "numpy", "none"
     if spec.mode_name == "D-Star":
-        return _gen_gmsk_numpy(), "numpy", "none"
+        msg = "D-Star uses _gen_gmsk_scan_signal(); call that path directly"
+        raise RuntimeError(msg)
     msg = f"No built-in generator for mode {spec.mode_name}"
     raise RuntimeError(msg)
 
@@ -391,7 +484,10 @@ def generate_iq_for_project(
             spec.expected_order,
         )
 
-        if project.gr_version == "4" and spec.generation_method != "plugin":
+        if (
+            project.gr_version == "4"
+            and spec.generation_method not in ("plugin", "synthetic")
+        ):
             results.append(
                 GeneratedIQ(
                     iq_path=Path(),
@@ -425,6 +521,20 @@ def generate_iq_for_project(
             chunks = _gen_psk_scan_chunks(8, use_gnuradio=use_gr)
             method = "gr3_builtin" if use_gr else "numpy"
             env_label = "gr3" if use_gr else "none"
+        elif spec.expected_order in PROTOCOL_4FSK_ORDERS:
+            chunks = _gen_protocol_4fsk_scan_chunks(spec.expected_order)
+            method = "synthetic"
+            env_label = "none"
+        elif spec.expected_order == "GMSK" or spec.mode_name in (
+            "GMSK",
+            "FreeDV",
+            "D-Star",
+            "DSTAR",
+        ):
+            signal, method, env_label = _gen_gmsk_scan_signal(
+                spec.mode_name, use_gnuradio=use_gr
+            )
+            chunks = _chunks_from_complex(signal)
         else:
             signal, method, env_label = _generate_signal(spec, gr3_env)
             chunks = _chunks_from_complex(signal)
