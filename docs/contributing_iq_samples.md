@@ -15,8 +15,9 @@ used by `rmv train`.
 | **Contributed IQ** | `.iq` + `.json` sidecar | Validate OOT modulator output |
 
 Training does not accept folders of `.iq` files and cannot add new modulation labels.
-Retraining only covers standard families and orders from the public datasets (BPSK,
-QPSK, 2FSK, NBFM, and so on). Do not commit training datasets or checkpoints in IQ PRs.
+Retraining covers public datasets plus optional **synthetic** orders (see
+[dataset_preparation.md](dataset_preparation.md)). Do not commit training datasets or
+checkpoints in IQ PRs.
 
 ## Custom and multi-carrier modes
 
@@ -65,8 +66,8 @@ For `myblock.iq`, create `myblock.json`:
 |-------|-------------|
 | `source` | Repository: `gr-qradiolink`, `gr-packet-protocols`, `gr-sleipnir`, or `other` |
 | `block_name` | GNU Radio block name (e.g. `mod_nbfm`) |
-| `expected_family` | `FM`, `FSK`, `PSK`, `QAM`, `AM`, or `PAM` |
-| `expected_order` | Specific mode (e.g. `NBFM`, `QPSK`, `2FSK`) |
+| `expected_family` | `FM`, `FSK`, `PSK`, `QAM`, `AM`, `PAM`, or `custom` (plugin modes) |
+| `expected_order` | Classifier label (e.g. `NBFM_25`, `QPSK`, `CPFSK`, `DMR`) — see tables below |
 | `sample_rate_hz` | Sample rate used in capture |
 | `center_freq_hz` | Center frequency (0 for baseband) |
 | `snr_db` | Optional measured SNR |
@@ -80,30 +81,38 @@ uv sync
 uv run rmv validate iq_samples/<repo>/<block>.iq --verbose
 ```
 
-Exit codes: `0` pass, `1` fail, `2` hard fail (wrong family or very low confidence).
+Exit codes: `0` pass, `1` soft fail (label mismatch), `2` hard fail (wrong family or
+family confidence below 0.40). A correct label with low confidence still passes; see
+[validation_methodology.md](validation_methodology.md).
 
 ## Expected family / order by repository
 
 ### gr-qradiolink (representative modes)
 
+Use exact order strings from `models/order_classifier.meta.json` (same as `rmv scan`).
+Generic M-FSK blocks are labeled **CPFSK** in training, not `2FSK` / `4FSK` / `8FSK`.
+
 | Block | expected_family | expected_order |
 |-------|-----------------|----------------|
-| mod_nbfm | FM | NBFM |
+| mod_nbfm | FM | `NBFM_25` (12.5 kHz channel) or `NBFM_50` (25 kHz) |
 | mod_wbfm | FM | WBFM |
 | mod_bpsk | PSK | BPSK |
 | mod_qpsk | PSK | QPSK |
-| mod_2fsk | FSK | 2FSK |
-| mod_4fsk | FSK | 4FSK |
+| mod_2fsk | FSK | CPFSK |
+| mod_4fsk | FSK | CPFSK |
 | mod_am_dsb | AM | AM-DSB |
 
 ### gr-packet-protocols
 
 | Block | expected_family | expected_order |
 |-------|-----------------|----------------|
-| mod_dmr | FSK | 4FSK |
-| mod_dstar | PSK | QPSK |
-| mod_ysf | FSK | 4FSK |
-| mod_p25 | FSK | 4FSK |
+| mod_dmr | FSK | DMR |
+| mod_dstar | FSK | GMSK (classifier may predict MSK — accepted alias) |
+| mod_ysf | FSK | YSF |
+| mod_p25 | FSK | CPFSK |
+| mod_m17 | FSK | M17 |
+| mod_nxdn | FSK | NXDN |
+| mod_dpmr | FSK | dPMR |
 
 ### gr-sleipnir
 

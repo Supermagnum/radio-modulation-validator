@@ -33,7 +33,7 @@ Each contribution consists of:
   "source": "gr-qradiolink",
   "block_name": "mod_nbfm",
   "expected_family": "FM",
-  "expected_order": "NBFM",
+  "expected_order": "NBFM_25",
   "sample_rate_hz": 48000,
   "center_freq_hz": 0,
   "snr_db": null,
@@ -43,7 +43,12 @@ Each contribution consists of:
 
 Valid `source` values: `gr-qradiolink`, `gr-packet-protocols`, `gr-sleipnir`, `other`.
 
-Valid `expected_family` values: `FM`, `FSK`, `PSK`, `QAM`, `AM`, `PAM`.
+Valid `expected_family` values: `FM`, `FSK`, `PSK`, `QAM`, `AM`, `PAM`, `custom`
+(plugin modes such as `sleipnir_8qpsk`).
+
+Use exact `expected_order` labels from `models/order_classifier.meta.json` (for example
+`NBFM_25`, `CPFSK`, `DMR` — not informal names like `NBFM` or `4FSK`). Pass/fail rules
+and aliases (GMSK↔MSK) are in [docs/validation_methodology.md](../docs/validation_methodology.md).
 
 Run validation:
 

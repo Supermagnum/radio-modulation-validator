@@ -1,7 +1,7 @@
 # Dataset Preparation
 
-Training uses three public datasets. Use **CSPB.ML.2018R2 only** (not the original
-2018 release; see [Known issues](#known-issues)).
+Training uses three public datasets plus optional **synthetic** IQ generated locally.
+Use **CSPB.ML.2018R2 only** (not the original 2018 release; see [Known issues](#known-issues)).
 
 ## Automatic download (recommended)
 
@@ -167,6 +167,30 @@ datasets/
     signal_*.tim
     .rmv_cspb_checksums.json   # CSPB batch checksum manifest
 ```
+
+## Synthetic training data (optional)
+
+Modes missing from public datasets (NBFM, aviation AM, WBFM, BPSK, QPSK, and
+protocol 4FSK) are generated locally with GNU Radio built-ins and numpy/scipy only —
+never OOT blocks under validation.
+
+```bash
+uv sync --extra train   # GNU Radio needed for NBFM/WBFM paths
+uv run rmv dataset generate-synthetic --output datasets/synthetic/
+```
+
+Default run: **12** modes × 1000 chunks × 26 SNR levels ≈ **312k** samples written to
+`datasets/synthetic/synthetic.npz` (gitignored). Subset with `--modes`, for example
+`dmr,m17,ysf,nxdn,dpmr`.
+
+Include in training:
+
+```bash
+uv run rmv train --synthetic datasets/synthetic/ ...
+```
+
+See [README.md](../README.md) — **Synthetic orders (12)** and
+[validation_methodology.md](validation_methodology.md) for scan-side label rules.
 
 ## Cache directory
 
