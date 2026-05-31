@@ -1,23 +1,32 @@
 # Pre-trained ONNX models
 
-Committed models (when available):
+Pre-trained classifiers are **committed in this directory** on the default branch:
 
-- `family_classifier.onnx` - predicts modulation family (AM, FM, FSK, PSK, QAM, PAM)
-- `order_classifier.onnx` - predicts specific modulation order within family
+- [`family_classifier.onnx`](https://github.com/Supermagnum/radio-modulation-validator/blob/main/models/family_classifier.onnx) — modulation family (AM, FM, FSK, PSK, QAM, PAM)
+- [`order_classifier.onnx`](https://github.com/Supermagnum/radio-modulation-validator/blob/main/models/order_classifier.onnx) — specific order within family
+- `family_classifier.meta.json` / `order_classifier.meta.json` — class vocabularies used by `rmv validate` and `rmv scan`
 
-## Download pre-trained models
+Browse all files: [models on GitHub](https://github.com/Supermagnum/radio-modulation-validator/tree/main/models).
 
-Download release artifacts from the project GitHub Releases page (placeholder URL):
+## Use the shipped models
 
-```
-https://github.com/example/radio-modulation-validator/releases/latest
-```
-
-Place both `.onnx` files and their `.meta.json` sidecars in this directory, then verify:
+After cloning or pulling the repository, verify integrity (optional but recommended):
 
 ```bash
+uv sync --extra dev
 uv run rmv checksum verify
 ```
+
+No separate download step is required when you use a full clone that includes `models/*.onnx`.
+
+If you use a sparse checkout or a source-only tarball without `models/`, restore the files from
+[the models directory on `main`](https://github.com/Supermagnum/radio-modulation-validator/tree/main/models)
+or download release assets when published:
+
+https://github.com/Supermagnum/radio-modulation-validator/releases/latest
+
+Place `family_classifier.onnx`, `order_classifier.onnx`, and both `.meta.json` sidecars in this
+directory, then run `uv run rmv checksum verify`.
 
 ## Train your own models
 

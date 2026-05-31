@@ -77,7 +77,7 @@ For `myblock.iq`, create `myblock.json`:
 
 ```bash
 uv sync
-# Download models per models/README.md
+# Models are in models/ — verify per models/README.md
 uv run rmv validate iq_samples/<repo>/<block>.iq --verbose
 ```
 

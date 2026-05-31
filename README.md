@@ -257,9 +257,7 @@ uv run rmv train --synthetic datasets/synthetic/ ...   # include in retraining
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync --extra dev
 
-# Download pre-trained ONNX models (see models/README.md)
-# Place family_classifier.onnx and order_classifier.onnx in models/
-
+# Pre-trained ONNX models are in models/ (see models/README.md)
 uv run rmv checksum verify
 uv run rmv validate iq_samples/gr-qradiolink/mod_example.iq
 ```
