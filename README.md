@@ -6,8 +6,24 @@ produce waveforms matching expected modulation **families** (FM, FSK, PSK, QAM, 
 PAM) and **orders** (NBFM, QPSK, 2FSK, etc.) using ONNX classifiers trained on
 public RF ML datasets.
 
+## What is an IQ file?
+
+An **IQ file** stores a chunk of **baseband** radio signal as a sequence of complex
+samples. Each sample has an **I** (in-phase) and **Q** (quadrature) component; together
+they describe amplitude and phase of the signal at a given **sample rate** (for example
+48 kHz). IQ captures are what SDR receivers and GNU Radio flowgraphs work with before
+demodulation or decoding.
+
+**GNU Radio** can write IQ to disk and read it back: use blocks such as **File Sink**
+and **File Source** (or SigMF equivalents) in a flowgraph to record modulator output or
+feed recorded data into a chain. This project expects simple binary `.iq` files:
+interleaved **float32** I/Q pairs (little-endian), often 1024 complex samples per chunk.
+See [Contributing IQ samples](#contributing-iq-samples) and [iq_samples/README.md](iq_samples/README.md)
+for the exact layout and sidecar JSON.
+
 ## Table of contents
 
+- [What is an IQ file?](#what-is-an-iq-file)
 - [Modulation coverage, training data, and synthesis](#modulation-coverage-training-data-and-synthesis)
   - [Complete order and bandwidth reference](#complete-order-and-bandwidth-reference)
   - [Families (6)](#families-6)
