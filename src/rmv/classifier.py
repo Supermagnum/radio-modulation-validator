@@ -12,12 +12,10 @@ import onnxruntime as ort
 
 from rmv.checksum_util import verify_model_checksum
 from rmv.constants import FAMILY_CLASSES, ORDER_CLASSES
+from rmv.models_paths import FAMILY_STEM, ORDER_STEM, resolve_onnx_model
 from rmv.types import ClassifierResult
 
 logger = logging.getLogger(__name__)
-
-FAMILY_MODEL = "family_classifier.onnx"
-ORDER_MODEL = "order_classifier.onnx"
 
 
 class ModulationClassifier:
@@ -35,17 +33,22 @@ class ModulationClassifier:
         self.confidence_threshold = confidence_threshold
         checksums = checksums_path or models_dir.parent / "checksums.sha256"
 
-        family_path = models_dir / FAMILY_MODEL
-        order_path = models_dir / ORDER_MODEL
+        family_path = resolve_onnx_model(models_dir, FAMILY_STEM)
+        order_path = resolve_onnx_model(models_dir, ORDER_STEM)
 
         if verify_checksums and checksums.is_file():
             from rmv.checksum_util import parse_checksums_file
 
             entries = parse_checksums_file(checksums)
-            if family_path.is_file() and FAMILY_MODEL in entries:
+            if family_path.is_file() and family_path.name in entries:
                 verify_model_checksum(family_path, checksums)
-            if order_path.is_file() and ORDER_MODEL in entries:
+            if order_path.is_file() and order_path.name in entries:
                 verify_model_checksum(order_path, checksums)
+
+        if family_path.name.endswith("_int8.onnx"):
+            logger.info("Using INT8 family classifier: %s", family_path.name)
+        if order_path.name.endswith("_int8.onnx"):
+            logger.info("Using INT8 order classifier: %s", order_path.name)
 
         self.family_names = self._load_class_names(family_path, FAMILY_CLASSES)
         self.order_names = self._load_class_names(order_path, ORDER_CLASSES)

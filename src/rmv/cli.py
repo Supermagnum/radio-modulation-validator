@@ -6,9 +6,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
-import numpy as np
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -51,9 +49,9 @@ def _setup_logging(verbose: bool) -> None:
 def validate_cmd(
     iq_file_or_dir: Path = typer.Argument(..., help="IQ file or directory to validate"),
     threshold: float = typer.Option(0.70, "--threshold", help="Confidence threshold"),
-    output: Optional[Path] = typer.Option(None, "--output", help="Write JSON results here"),
+    output: Path | None = typer.Option(None, "--output", help="Write JSON results here"),
     verbose: bool = typer.Option(False, "--verbose", help="Print per-chunk predictions"),
-    repo: Optional[str] = typer.Option(None, "--repo", help="Filter by source repo name"),
+    repo: str | None = typer.Option(None, "--repo", help="Filter by source repo name"),
 ) -> None:
     """Validate IQ file(s) against sidecar metadata."""
     _setup_logging(verbose)
@@ -77,22 +75,22 @@ def validate_cmd(
 
 @app.command("train")
 def train_cmd(
-    radioml: Optional[Path] = typer.Option(
+    radioml: Path | None = typer.Option(
         None,
         "--radioml",
         help="RadioML pickle or tar (default: datasets/radioml/ if present)",
     ),
-    hisarmod: Optional[Path] = typer.Option(
+    hisarmod: Path | None = typer.Option(
         None,
         "--hisarmod",
         help="HISARMOD HDF5 (default: datasets/hisarmod/HisarMod2019.1.h5)",
     ),
-    cspb: Optional[Path] = typer.Option(
+    cspb: Path | None = typer.Option(
         None,
         "--cspb",
         help="CSPB.ML.2018R2 directory (default: datasets/cspb/)",
     ),
-    synthetic: Optional[Path] = typer.Option(
+    synthetic: Path | None = typer.Option(
         None,
         "--synthetic",
         help="Synthetic dataset (synthetic.npz or directory, default: datasets/synthetic/)",
@@ -178,7 +176,7 @@ def verify_family_cmd(
         "--checkpoint-dir",
         help="Directory with best_family_classifier.pt",
     ),
-    radioml: Optional[Path] = typer.Option(
+    radioml: Path | None = typer.Option(
         Path("datasets/radioml/RML2016.10a_dict.pkl"),
         "--radioml",
         help="RadioML pickle for AM/QAM/FSK/PAM checks (not WBFM/BPSK)",
@@ -247,6 +245,92 @@ def export_cmd(
         print(json.dumps({"exported": str(p), "schema_version": "1.0"}))
 
 
+@app.command("export-quantised")
+def export_quantised_cmd(
+    synthetic: Path = typer.Option(
+        Path("datasets/synthetic/synthetic.npz"),
+        "--synthetic",
+        help="synthetic.npz or directory containing it",
+    ),
+    models_dir: Path = typer.Option(Path("models"), "--models-dir"),
+    calibration_chunks: int = typer.Option(512, "--calibration-chunks"),
+    snr_min: float = typer.Option(0.0, "--snr-min"),
+    tolerance: float = typer.Option(3.0, "--tolerance"),
+    npu: bool = typer.Option(
+        False,
+        "--npu",
+        help="Also convert to SpacemiT .nb (requires spacemit-npu-convert)",
+    ),
+    skip_verify: bool = typer.Option(False, "--skip-verify"),
+    checksums: Path = typer.Option(Path("checksums.sha256"), "--checksums"),
+    seed: int | None = typer.Option(42, "--seed"),
+) -> None:
+    """Quantise FP32 ONNX models to INT8 using synthetic calibration data."""
+    _setup_logging(False)
+    try:
+        from rmv.export_quantised import run_export_quantised
+    except ImportError as exc:
+        err_console.print(f"[red]export-quantised failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        paths = run_export_quantised(
+            synthetic,
+            models_dir,
+            calibration_chunks=calibration_chunks,
+            snr_min=snr_min,
+            tolerance_pct=tolerance,
+            skip_verify=skip_verify,
+            npu=npu,
+            checksums_path=checksums,
+            seed=seed,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        err_console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    for p in paths:
+        print(json.dumps({"quantised": str(p), "schema_version": "1.0"}))
+
+
+@app.command("export-npu")
+def export_npu_cmd(
+    int8_dir: Path = typer.Option(Path("models"), "--int8-dir"),
+    output_dir: Path = typer.Option(Path("models"), "--output-dir"),
+    calibration: Path | None = typer.Option(
+        None,
+        "--calibration",
+        help="Calibration data for NPU optimisation (synthetic.npz)",
+    ),
+) -> None:
+    """Convert INT8 ONNX models to SpacemiT NPU .nb binaries."""
+    _setup_logging(False)
+    from rmv.export_npu import run_export_npu
+    from rmv.models_paths import resolve_synthetic_npz
+
+    cal_path: Path | None = None
+    if calibration is not None:
+        try:
+            cal_path = resolve_synthetic_npz(calibration)
+        except FileNotFoundError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            raise typer.Exit(code=1) from exc
+
+    paths = run_export_npu(
+        int8_dir,
+        output_dir=output_dir,
+        calibration_data_path=cal_path,
+    )
+    if not paths:
+        err_console.print(
+            "[yellow]No .nb files produced. Install SpacemiT SDK or run "
+            "export-quantised first.[/]"
+        )
+        raise typer.Exit(code=1)
+    for p in paths:
+        print(json.dumps({"npu_model": str(p), "schema_version": "1.0"}))
+
+
 @app.command("classify")
 def classify_cmd(
     iq_file: Path = typer.Argument(..., help="IQ file to classify"),
@@ -284,7 +368,7 @@ def _style_for_confidence(conf: float, threshold: float) -> str:
 @app.command("report")
 def report_cmd(
     results_dir: Path = typer.Argument(..., help="Directory with validation JSON files"),
-    output: Optional[Path] = typer.Option(None, "--output"),
+    output: Path | None = typer.Option(None, "--output"),
     format: str = typer.Option("markdown", "--format", help="json | markdown"),
 ) -> None:
     """Generate summary report from validation_results."""

@@ -39,7 +39,7 @@ def parse_checksums_file(path: Path) -> dict[str, str]:
 def write_checksums_file(path: Path, entries: dict[str, str]) -> None:
     """Write checksum entries sorted by filename."""
     lines = [
-        "# SHA-256 checksums for committed ONNX models.",
+        "# SHA-256 checksums for models/*.onnx (FP32 and INT8).",
         "# Run: rmv checksum update",
         "# Verify: rmv checksum verify",
         "",
@@ -71,7 +71,7 @@ def verify_model_checksum(model_path: Path, checksums_path: Path) -> None:
 
 
 def update_checksums_for_dir(models_dir: Path, checksums_path: Path) -> int:
-    """Recompute checksums for all models/*.onnx and update checksums.sha256."""
+    """Recompute checksums for every models/*.onnx and update checksums.sha256."""
     entries: dict[str, str] = {}
     if not models_dir.is_dir():
         msg = f"Models directory not found: {models_dir}"

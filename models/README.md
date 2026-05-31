@@ -28,6 +28,20 @@ https://github.com/Supermagnum/radio-modulation-validator/releases/latest
 Place `family_classifier.onnx`, `order_classifier.onnx`, and both `.meta.json` sidecars in this
 directory, then run `uv run rmv checksum verify`.
 
+## INT8 quantisation (NPU / faster CPU)
+
+Quantise committed FP32 models with synthetic calibration data:
+
+```bash
+uv run rmv dataset generate-synthetic --output datasets/synthetic/
+uv run rmv export-quantised --synthetic datasets/synthetic/synthetic.npz
+uv run rmv checksum update
+```
+
+This writes `family_classifier_int8.onnx` and `order_classifier_int8.onnx`. Inference
+prefers INT8 when present. SpacemiT `.nb` conversion is optional; see
+[docs/npu-deployment.md](../docs/npu-deployment.md).
+
 ## Train your own models
 
 See the root [README.md](../README.md) retraining section. After training and export:

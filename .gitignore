@@ -36,6 +36,9 @@ cache/
 *.pth
 checkpoints/
 
+# SpacemiT NPU binaries (generate on device; not committed)
+models/*.nb
+
 # Python
 __pycache__/
 *.pyc

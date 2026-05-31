@@ -35,6 +35,7 @@ public RF ML datasets.
 - [Retraining models](#retraining-models)
 - [Dataset version pinning (released models)](#dataset-version-pinning-released-models)
 - [Validation methodology](#validation-methodology)
+- [NPU deployment (INT8)](#npu-deployment-int8)
 - [Known limitations](#known-limitations)
 - [Development](#development)
 - [License](#license)
@@ -318,6 +319,8 @@ print(result.family_pass, result.order_pass)
 | `rmv plugins describe <mode_id>` | Show plugin measurements and pass criteria |
 | `rmv train` | Train family/order ResidualCNN models |
 | `rmv export` | Export checkpoint to ONNX |
+| `rmv export-quantised` | Quantise FP32 ONNX to INT8 (synthetic calibration) |
+| `rmv export-npu` | Convert INT8 ONNX to SpacemiT `.nb` (SDK optional) |
 | `rmv report <dir>` | Summary from validation JSON |
 | `rmv checksum verify` | Verify ONNX SHA-256 |
 | `rmv checksum update` | Refresh checksums.sha256 |
@@ -584,6 +587,17 @@ uv run rmv checksum update
 
 Placeholder: first release models trained on the versions above with 50 epochs,
 batch size 512, AdamW lr=1e-3.
+
+## NPU deployment (INT8)
+
+For SpacemiT K3 NPU deployment, quantise shipped FP32 ONNX models to INT8 and optionally
+convert to `.nb` binaries. See [docs/npu-deployment.md](docs/npu-deployment.md).
+
+```bash
+uv run rmv dataset generate-synthetic --output datasets/synthetic/
+uv run rmv export-quantised --synthetic datasets/synthetic/synthetic.npz
+uv run rmv export-npu --calibration datasets/synthetic/synthetic.npz   # on K3 or with SDK
+```
 
 ## Validation methodology
 
