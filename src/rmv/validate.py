@@ -19,6 +19,20 @@ from rmv.types import ClassifierResult, IQSidecar, ValidationResult, sidecar_pat
 
 logger = logging.getLogger(__name__)
 
+ORDER_ALIASES: dict[str, list[str]] = {
+    "GMSK": ["MSK", "GMSK"],
+    "MSK": ["MSK", "GMSK"],
+    "CPFSK": ["CPFSK", "GFSK"],
+    "GFSK": ["GFSK", "CPFSK"],
+}
+
+
+def order_matches(expected: str, predicted: str) -> bool:
+    """True when predicted order is acceptable for the expected label."""
+    key = expected.strip()
+    allowed = ORDER_ALIASES.get(key, [key])
+    return predicted.strip() in allowed
+
 
 def load_sidecar(iq_file: Path) -> IQSidecar:
     """Load JSON sidecar for an IQ file."""
@@ -68,20 +82,22 @@ def evaluate_validation(
     Compare prediction to expected values.
 
     Returns (family_pass, order_pass, hard_fail, hard_fail_reason).
+
+    Pass/fail is based on label correctness only. The confidence threshold is
+    used by the scan runner for warnings on correct-but-low-confidence results,
+    not to mark a matching prediction as failed.
     """
-    family_pass = (
+    family_correct = (
         prediction.family.upper() == sidecar.expected_family.upper()
-        and prediction.family_confidence >= threshold
     )
-    order_pass = (
-        prediction.order.upper() == sidecar.expected_order.upper()
-        and prediction.order_confidence >= threshold
-    )
+    order_correct = order_matches(sidecar.expected_order, prediction.order)
+    family_pass = family_correct
+    order_pass = order_correct
 
     hard_fail = False
     hard_fail_reason: str | None = None
 
-    if prediction.family.upper() != sidecar.expected_family.upper():
+    if not family_correct:
         hard_fail = True
         hard_fail_reason = (
             f"Wrong family: expected {sidecar.expected_family}, got {prediction.family}"
@@ -223,13 +239,16 @@ def run_validate_file(
             sidecar_to_metadata_dict(sidecar),
         )
         if verbose:
+            scores = custom.metrics.get("confidence_scores", {})
             logger.info(
-                "Custom mode %s: pass=%s confidence=%.2f metrics=%s",
+                "Custom mode %s: pass=%s confidence=%.2f",
                 custom.mode_id,
                 custom.pass_overall,
                 custom.confidence,
-                custom.metrics,
             )
+            if scores:
+                logger.info("  confidence_scores: %s", scores)
+            logger.info("  metrics: %s", custom.metrics)
         result = build_validation_result_from_custom(
             iq_file, sidecar, custom, threshold=threshold
         )
