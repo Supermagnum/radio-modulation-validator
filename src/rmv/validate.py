@@ -32,7 +32,11 @@ def load_sidecar(iq_file: Path) -> IQSidecar:
 
 def load_iq_chunks(iq_file: Path, chunk_samples: int = 1024) -> np.ndarray:
     """Load and normalise .iq or SigMF file into (N, 2, chunk_samples) chunks."""
-    return load_iq_chunks_from_path(iq_file, chunk_samples=chunk_samples)
+    chunks = load_iq_chunks_from_path(iq_file, chunk_samples=chunk_samples)
+    if chunks.ndim != 3 or chunks.shape[1:] != (2, chunk_samples):
+        msg = f"Wrong IQ chunk shape: {chunks.shape}, expected (N, 2, {chunk_samples})"
+        raise ValueError(msg)
+    return chunks
 
 
 def is_custom_mode_sidecar(sidecar: IQSidecar) -> bool:

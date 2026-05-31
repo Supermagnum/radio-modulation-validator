@@ -18,6 +18,7 @@ from rmv.checksum_util import update_checksums_for_dir, verify_all_models
 from rmv.classifier import ModulationClassifier
 from rmv.dataset.cli import register_dataset_commands
 from rmv.plugins.cli import plugins_app
+from rmv.scan.cli import register_scan_commands
 from rmv.validate import run_validate_cli
 
 app = typer.Typer(
@@ -26,8 +27,11 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 checksum_app = typer.Typer(help="Manage model checksums.")
+cache_app = typer.Typer(help="Preprocessed dataset cache.")
 app.add_typer(checksum_app, name="checksum")
+app.add_typer(cache_app, name="cache")
 register_dataset_commands(app)
+register_scan_commands(app)
 app.add_typer(plugins_app, name="plugins")
 
 console = Console(stderr=True)
@@ -167,6 +171,56 @@ def train_cmd(
         raise typer.Exit(code=1) from exc
 
 
+@app.command("verify-family")
+def verify_family_cmd(
+    checkpoint_dir: Path = typer.Option(
+        Path("checkpoints"),
+        "--checkpoint-dir",
+        help="Directory with best_family_classifier.pt",
+    ),
+    radioml: Optional[Path] = typer.Option(
+        Path("datasets/radioml/RML2016.10a_dict.pkl"),
+        "--radioml",
+        help="RadioML pickle for AM/QAM/FSK/PAM checks (not WBFM/BPSK)",
+    ),
+    threshold: float = typer.Option(
+        0.60,
+        "--threshold",
+        help="Minimum softmax confidence for a pass",
+    ),
+    no_gr: bool = typer.Option(
+        False,
+        "--no-gr",
+        help="Use numpy fallback for synthetic cases (no GNU Radio)",
+    ),
+) -> None:
+    """
+    Verify family checkpoint before ONNX export.
+
+    WBFM/BPSK/QPSK are tested with synthetic IQ (training source), not RadioML
+    128-sample upsamples, which lack usable FM/PSK structure at 1024 samples.
+    """
+    _setup_logging(False)
+    try:
+        from rmv.verify_checkpoint import print_verify_report, verify_family_checkpoint
+    except ImportError as exc:
+        err_console.print(f"[red]verify-family requires train extras:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    r_path = radioml if radioml.is_file() else None
+    if r_path is None and radioml is not None:
+        err_console.print(f"[yellow]RadioML not found at {radioml}; synthetic-only checks[/]")
+
+    results = verify_family_checkpoint(
+        checkpoint_dir,
+        radioml_pkl=r_path,
+        confidence_threshold=threshold,
+        use_gnuradio=not no_gr,
+    )
+    ok = print_verify_report(results, console=console)
+    raise typer.Exit(code=0 if ok else 1)
+
+
 @app.command("export")
 def export_cmd(
     checkpoint: Path = typer.Option(..., "--checkpoint", help="Best .pt checkpoint"),
@@ -280,6 +334,27 @@ def _dict_to_validation(data: dict[str, object]) -> object:
         hard_fail_reason=data.get("hard_fail_reason"),  # type: ignore[arg-type]
         custom_mode=data.get("custom_mode"),  # type: ignore[arg-type]
     )
+
+
+@cache_app.command("clean")
+def cache_clean(
+    cache_dir: Path = typer.Option(Path(".cache"), "--cache", help="Cache root directory"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="List stale files without deleting",
+    ),
+) -> None:
+    """Delete preprocessed cache files from older processing pipeline versions."""
+    from rmv.dataset.preprocess import CACHE_FILE_SUFFIX, PROCESSING_VERSION, clean_stale_cache
+
+    removed, kept = clean_stale_cache(cache_dir, dry_run=dry_run)
+    action = "Would remove" if dry_run else "Removed"
+    console.print(
+        f"{action} {removed} stale cache file(s) under {cache_dir} "
+        f"(processing version {PROCESSING_VERSION}, suffix {CACHE_FILE_SUFFIX})"
+    )
+    console.print(f"Kept {kept} file(s) matching current version.")
 
 
 @checksum_app.command("verify")

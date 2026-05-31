@@ -10,8 +10,8 @@ RADIOML_CLASSES: list[str] = [
     "BPSK",
     "QPSK",
     "8PSK",
-    "16QAM",
-    "64QAM",
+    "QAM16",
+    "QAM64",
     "CPFSK",
     "GFSK",
     "PAM4",
@@ -26,10 +26,16 @@ RADIOML_TO_FAMILY: dict[str, str] = {
     "8PSK": "PSK",
     "16QAM": "QAM",
     "64QAM": "QAM",
+    "QAM16": "QAM",
+    "QAM64": "QAM",
     "CPFSK": "FSK",
     "GFSK": "FSK",
     "PAM4": "PAM",
 }
+
+# RadioML 128-sample windows upsampled to 1024 lack clear FM/PSK structure;
+# family training uses synthetic replacements for these orders instead.
+RADIOML_SKIP_FOR_FAMILY: frozenset[str] = frozenset({"WBFM", "BPSK", "QPSK"})
 
 # HISARMOD 2019.1 - 26 classes
 HISARMOD_CLASSES: list[str] = [
@@ -124,6 +130,9 @@ SYNTHETIC_CLASSES: list[str] = [
     "NBFM_50",
     "AM_AIR_25K",
     "AM_AIR_833",
+    "WBFM",
+    "BPSK",
+    "QPSK",
 ]
 
 SYNTHETIC_TO_FAMILY: dict[str, str] = {
@@ -131,6 +140,9 @@ SYNTHETIC_TO_FAMILY: dict[str, str] = {
     "NBFM_50": "FM",
     "AM_AIR_25K": "AM",
     "AM_AIR_833": "AM",
+    "WBFM": "FM",
+    "BPSK": "PSK",
+    "QPSK": "PSK",
 }
 
 ORDER_CLASSES: list[str] = sorted(
@@ -139,6 +151,8 @@ ORDER_CLASSES: list[str] = sorted(
     | set(CSPB_CLASSES)
     | set(SYNTHETIC_CLASSES)
     | {
+        "16QAM",
+        "64QAM",
         "NBFM",
         "WBFM",
         "2FSK",

@@ -25,7 +25,7 @@ from rmv.constants import (
 )
 from rmv.dataset.preprocess import (
     cache_path_for_source,
-    load_cache_shard,
+    try_load_cache_shard,
     normalise_unit_power,
     save_cache_shard,
     tim_to_chunks,
@@ -96,8 +96,9 @@ def load_radioml_streaming(
     cache_key = f"radioml_{pkl_path.stat().st_size}"
     if cache_dir is not None:
         cache_path = cache_path_for_source(cache_dir, "radioml2016", cache_key)
-        if cache_path.is_file():
-            samples, labels, snr = load_cache_shard(cache_path)
+        cached = try_load_cache_shard(cache_path)
+        if cached is not None:
+            samples, labels, snr = cached
             if load_all:
                 yield samples, labels, snr
                 return
@@ -178,8 +179,9 @@ def load_hisarmod_streaming(
     cache_key = f"hisarmod_{path.stat().st_size}"
     if cache_dir is not None:
         cache_path = cache_path_for_source(cache_dir, "hisarmod", cache_key)
-        if cache_path.is_file():
-            samples, labels, snr = load_cache_shard(cache_path)
+        cached = try_load_cache_shard(cache_path)
+        if cached is not None:
+            samples, labels, snr = cached
             if load_all:
                 yield samples, labels, snr
                 return
@@ -417,8 +419,9 @@ def load_cspb(
     cache_key = f"cspb_{path.stat().st_size}_{truth_tag}"
     if cache_dir is not None:
         cache_path = cache_path_for_source(cache_dir, "cspb", cache_key)
-        if cache_path.is_file():
-            samples, labels, snr = load_cache_shard(cache_path)
+        cached = try_load_cache_shard(cache_path)
+        if cached is not None:
+            samples, labels, snr = cached
             if progress is not None and progress_task is not None:
                 progress.update(
                     progress_task,

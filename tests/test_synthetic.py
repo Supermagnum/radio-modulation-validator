@@ -197,4 +197,4 @@ def test_generate_synthetic_class_names() -> None:
     )
     assert set(ds.class_names) == set(MODE_TO_CLASS.values())
     assert isinstance(ds, IQDataset)
-    assert len(ds.samples) == 4 * 1 * 1
+    assert len(ds.samples) == len(MODE_TO_CLASS) * 1 * 1

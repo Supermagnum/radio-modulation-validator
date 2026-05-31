@@ -57,6 +57,12 @@ tensorboard/
 # Local AI prompts (not part of the project)
 prompt2.md
 
+# rmv scan local state
+.rmv_findings.db
+.rmv_findings.db-journal
+.scan_iq/
+.rmv_config.toml
+
 # IDE and OS
 .idea/
 .vscode/

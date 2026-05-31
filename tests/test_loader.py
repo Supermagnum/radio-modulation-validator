@@ -33,9 +33,24 @@ def test_upsample_128_to_1024() -> None:
     assert y.shape == (2, 2, 1024)
 
 
-def test_chunk_iq_file() -> None:
+def test_chunk_iq_file_deinterleaves_correctly() -> None:
+    from tests.fixtures.synthetic_iq import generate_bpsk, interleave_iq
+
+    source = normalise_unit_power(generate_bpsk()[np.newaxis, ...])[0]
+    raw = interleave_iq(source)
+    loaded = chunk_iq_file(raw)
+    assert loaded.shape == (1, 2, 1024)
+    np.testing.assert_allclose(loaded[0], source, atol=1e-5)
+
+
+def test_chunk_iq_file_multiple_chunks() -> None:
+    from tests.fixtures.synthetic_iq import generate_bpsk, interleave_iq
+
     n_chunks = 3
-    raw = np.random.randn(n_chunks * 1024 * 2).astype(np.float32)
+    parts = [
+        normalise_unit_power(generate_bpsk()[np.newaxis, ...])[0] for _ in range(n_chunks)
+    ]
+    raw = np.concatenate([interleave_iq(p) for p in parts])
     chunks = chunk_iq_file(raw)
     assert chunks.shape == (n_chunks, 2, 1024)
 

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import logging
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +14,10 @@ from scipy.signal import resample
 from rmv.constants import CHUNK_SAMPLES
 
 logger = logging.getLogger(__name__)
+
+
+class CacheLoadError(OSError):
+    """Raised when a preprocessed cache shard cannot be read."""
 
 
 def normalise_unit_power(samples: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -62,17 +69,19 @@ def chunk_iq_file(data: np.ndarray, chunk_samples: int = CHUNK_SAMPLES) -> np.nd
     """
     Split flat interleaved I/Q float32 into (N, 2, chunk_samples).
 
-    data: shape (2 * chunk_samples * N,) interleaved I,Q
+    data: interleaved I0, Q0, I1, Q1, ... (not reshape-safe; use de-interleave first).
     """
-    if data.size % (2 * chunk_samples) != 0:
+    iq = interleaved_to_iq(np.asarray(data, dtype=np.float32))
+    if iq.shape[1] % chunk_samples != 0:
         msg = (
-            f"IQ data length {data.size} is not a multiple of "
-            f"{2 * chunk_samples} (interleaved float32 I/Q pairs)"
+            f"IQ sample count {iq.shape[1]} is not a multiple of "
+            f"{chunk_samples} (interleaved float32 I/Q pairs)"
         )
         raise ValueError(msg)
-    n_chunks = data.size // (2 * chunk_samples)
-    reshaped = data.reshape(n_chunks, 2, chunk_samples)
-    return normalise_unit_power(reshaped, axis=-1)
+    n_chunks = iq.shape[1] // chunk_samples
+    trimmed = iq[:, : n_chunks * chunk_samples]
+    chunks = trimmed.reshape(2, n_chunks, chunk_samples).transpose(1, 0, 2)
+    return normalise_unit_power(chunks.astype(np.float32), axis=-1)
 
 
 def interleaved_to_iq(data: np.ndarray) -> np.ndarray:
@@ -107,16 +116,66 @@ def tim_to_chunks(
     return normalise_unit_power(chunks.astype(np.float32), axis=-1)
 
 
+def _compute_processing_version() -> str:
+    """Hash of upsample/normalise source; changes when processing pipeline changes."""
+    src = inspect.getsource(upsample_iq_128_to_1024) + inspect.getsource(normalise_unit_power)
+    return hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
+
+
+PROCESSING_VERSION: str = _compute_processing_version()
+
+CACHE_FILE_SUFFIX = f"_{PROCESSING_VERSION}.npy.npz"
+
+
 def cache_path_for_source(cache_dir: Path, source: str, key: str) -> Path:
-    """Build cache file path for preprocessed dataset shard."""
+    """Build versioned cache path for a preprocessed dataset shard."""
     safe_key = key.replace("/", "_").replace(" ", "_")
-    return cache_dir / source / f"{safe_key}.npy"
+    return cache_dir / source / f"{safe_key}{CACHE_FILE_SUFFIX}"
+
+
+def is_current_cache_file(path: Path) -> bool:
+    """True if path matches the current processing pipeline version."""
+    return path.name.endswith(CACHE_FILE_SUFFIX)
+
+
+def _is_cache_artifact(path: Path) -> bool:
+    name = path.name
+    return name.endswith(".npz") or name.endswith(".npy") or name.endswith(".npy.npz")
+
+
+def clean_stale_cache(cache_dir: Path, *, dry_run: bool = False) -> tuple[int, int]:
+    """
+    Remove cache files that do not match PROCESSING_VERSION.
+
+    Returns (removed_count, kept_count).
+    """
+    if not cache_dir.is_dir():
+        return 0, 0
+    removed = 0
+    kept = 0
+    for path in sorted(cache_dir.rglob("*")):
+        if not path.is_file() or not _is_cache_artifact(path):
+            continue
+        if is_current_cache_file(path):
+            kept += 1
+            continue
+        if not dry_run:
+            path.unlink()
+        removed += 1
+    return removed, kept
 
 
 def save_cache_shard(path: Path, samples: np.ndarray, labels: np.ndarray, snr: np.ndarray) -> None:
-    """Save preprocessed shard to .npy bundle."""
+    """Save preprocessed shard atomically (temp .npz file then rename)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, samples=samples, labels=labels, snr_db=snr)
+    # np.savez_compressed appends ".npz" when the path does not already end with it.
+    tmp_path = path.parent / f".{path.name}.part.npz"
+    try:
+        np.savez_compressed(tmp_path, samples=samples, labels=labels, snr_db=snr)
+        tmp_path.replace(path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def load_cache_shard(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -124,9 +183,39 @@ def load_cache_shard(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not path.is_file():
         msg = f"Cache file not found: {path}"
         raise FileNotFoundError(msg)
-    data = np.load(path)
-    return (
-        data["samples"].astype(np.float32),
-        data["labels"].astype(np.int32),
-        data["snr_db"].astype(np.float32),
-    )
+    try:
+        with np.load(path) as data:
+            required = ("samples", "labels", "snr_db")
+            missing = [key for key in required if key not in data]
+            if missing:
+                msg = f"Cache file {path} missing arrays: {missing}"
+                raise CacheLoadError(msg)
+            return (
+                data["samples"].astype(np.float32),
+                data["labels"].astype(np.int32),
+                data["snr_db"].astype(np.float32),
+            )
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+        msg = f"Failed to read cache file {path}: {exc}"
+        raise CacheLoadError(msg) from exc
+
+
+def try_load_cache_shard(
+    path: Path,
+    *,
+    remove_on_failure: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """
+    Load cache shard, or None if missing/corrupt.
+
+    Corrupt files are removed so the next load can rebuild them.
+    """
+    if not path.is_file():
+        return None
+    try:
+        return load_cache_shard(path)
+    except CacheLoadError as exc:
+        logger.warning("%s", exc)
+        if remove_on_failure:
+            path.unlink(missing_ok=True)
+        return None

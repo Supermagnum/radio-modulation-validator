@@ -178,7 +178,7 @@ def dataset_generate_synthetic(
     modes: Optional[str] = typer.Option(
         None,
         "--modes",
-        help="Comma-separated: nbfm25,nbfm50,am_air_25k,am_air_833 (default: all)",
+        help="Comma-separated modes (default: all): nbfm25,nbfm50,am_air_25k,am_air_833,wbfm,bpsk,qpsk",
     ),
     chunks_per_snr: int = typer.Option(
         1000,
@@ -199,7 +199,7 @@ def dataset_generate_synthetic(
     seed: Optional[int] = typer.Option(None, "--seed", help="RNG seed for reproducibility"),
 ) -> None:
     """
-    Generate synthetic NBFM and aviation AM training data (GNU Radio / scipy only).
+    Generate synthetic FM, AM, and PSK training data (GNU Radio / scipy only).
 
     Output is written under datasets/synthetic/ by default (gitignored).
     """

@@ -20,6 +20,7 @@ from rmv.constants import (
     FAMILY_CLASSES,
     HISARMOD_TO_FAMILY,
     ORDER_CLASSES,
+    RADIOML_SKIP_FOR_FAMILY,
     RADIOML_TO_FAMILY,
     SYNTHETIC_TO_FAMILY,
 )
@@ -60,16 +61,57 @@ def _resolve_device(device: str) -> torch.device:
     return torch.device(device)
 
 
-def _order_to_family(order: str, source: str) -> str:
+def compute_class_weights(
+    labels: np.ndarray,
+    num_classes: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Inverse-frequency class weights, normalised to mean 1."""
+    counts = np.bincount(labels, minlength=num_classes).astype(np.float64)
+    counts = np.maximum(counts, 1.0)
+    weights = 1.0 / counts
+    weights = weights / weights.sum() * num_classes
+    return torch.tensor(weights, dtype=torch.float32, device=device)
+
+
+def _family_psk_skew_exceeds_threshold(
+    train_labels: np.ndarray,
+    num_classes: int,
+    *,
+    ratio_threshold: float = 3.0,
+) -> bool:
+    """True when PSK training samples exceed any other family by ratio_threshold."""
+    if "PSK" not in FAMILY_CLASSES:
+        return False
+    psk_idx = FAMILY_CLASSES.index("PSK")
+    counts = np.bincount(train_labels, minlength=num_classes).astype(np.float64)
+    psk_count = counts[psk_idx]
+    others = np.concatenate([counts[:psk_idx], counts[psk_idx + 1 :]])
+    max_other = float(np.max(others)) if others.size else 0.0
+    if max_other <= 0:
+        return False
+    return psk_count / max_other > ratio_threshold
+
+
+def _order_to_family(order: str, source: str) -> str | None:
     if source == "radioml2016":
-        return RADIOML_TO_FAMILY.get(order, "PSK")
-    if source == "hisarmod":
-        return HISARMOD_TO_FAMILY.get(order, "PSK")
-    if source == "cspb":
-        return CSPB_TO_FAMILY.get(order, "PSK")
-    if source == "synthetic":
-        return SYNTHETIC_TO_FAMILY.get(order, "PSK")
-    return "PSK"
+        result = RADIOML_TO_FAMILY.get(order)
+    elif source == "hisarmod":
+        result = HISARMOD_TO_FAMILY.get(order)
+    elif source == "cspb":
+        result = CSPB_TO_FAMILY.get(order)
+    elif source == "synthetic":
+        result = SYNTHETIC_TO_FAMILY.get(order)
+    else:
+        result = None
+
+    if result is None:
+        logger.warning(
+            "Unknown order %r from source %r — sample will be skipped",
+            order,
+            source,
+        )
+    return result
 
 
 def _build_label_arrays(
@@ -88,22 +130,44 @@ def _build_label_arrays(
         class_names = ORDER_CLASSES
         name_to_idx = {c: i for i, c in enumerate(class_names)}
 
+    skipped = 0
     for ds in datasets:
+        ds_samples: list[np.ndarray] = []
+        ds_labels: list[int] = []
+        ds_snr: list[float] = []
         for i, order_idx in enumerate(ds.labels):
             order_name = ds.class_names[int(order_idx)]
             if mode == "family":
-                fam = _order_to_family(order_name, ds.source)
-                if fam not in name_to_idx:
+                if (
+                    ds.source == "radioml2016"
+                    and order_name in RADIOML_SKIP_FOR_FAMILY
+                ):
+                    skipped += 1
                     continue
-                labels_list.append(name_to_idx[fam])
+                fam = _order_to_family(order_name, ds.source)
+                if fam is None or fam not in name_to_idx:
+                    skipped += 1
+                    continue
+                ds_labels.append(name_to_idx[fam])
             else:
                 if order_name not in name_to_idx:
                     name_to_idx[order_name] = len(class_names)
                     class_names.append(order_name)
-                labels_list.append(name_to_idx[order_name])
-            snr_list.append(float(ds.snr_db[i]))
+                ds_labels.append(name_to_idx[order_name])
+            ds_samples.append(ds.samples[i])
+            ds_snr.append(float(ds.snr_db[i]))
 
-        samples_list.append(ds.samples)
+        if ds_samples:
+            samples_list.append(np.stack(ds_samples, axis=0))
+            labels_list.extend(ds_labels)
+            snr_list.extend(ds_snr)
+
+    if skipped:
+        logger.info("Skipped %d samples with unknown or excluded family mapping", skipped)
+
+    if not samples_list:
+        msg = "No training samples after family mapping (all excluded or unknown)"
+        raise ValueError(msg)
 
     samples = np.concatenate(samples_list, axis=0)
     labels = np.array(labels_list, dtype=np.int64)
@@ -256,7 +320,17 @@ def train_model(config: TrainConfig) -> Path:
     model = ResidualCNN(num_classes).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
-    criterion = nn.CrossEntropyLoss()
+    train_labels = labels[train_idx]
+    if config.mode == "family" and _family_psk_skew_exceeds_threshold(
+        train_labels, num_classes
+    ):
+        class_weights = compute_class_weights(train_labels, num_classes, device)
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        train_console.print(
+            "[yellow]PSK family count >3x other families; using weighted CrossEntropyLoss[/]"
+        )
+    else:
+        criterion = nn.CrossEntropyLoss()
 
     train_loader = _make_loader(samples, labels, train_idx, config.batch_size, shuffle=True)
     val_loader = _make_loader(samples, labels, val_idx, config.batch_size, shuffle=False)
@@ -269,7 +343,7 @@ def train_model(config: TrainConfig) -> Path:
     best_acc = 0.0
     epochs_no_improve = 0
     use_amp = device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     with Progress(
         TextColumn("[progress.description]{task.description}"),
@@ -306,7 +380,7 @@ def train_model(config: TrainConfig) -> Path:
                     xb = xb.to(device)
                     yb = yb.to(device)
                     optimizer.zero_grad()
-                    with torch.cuda.amp.autocast(enabled=use_amp):
+                    with torch.amp.autocast("cuda", enabled=use_amp):
                         logits = model(xb)
                         loss = criterion(logits, yb)
                     scaler.scale(loss).backward()

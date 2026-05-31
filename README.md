@@ -297,6 +297,32 @@ print(result.family_pass, result.order_pass)
 | `rmv dataset status` | Show dataset presence and checksums |
 | `rmv dataset verify` | Verify dataset file checksums |
 | `rmv dataset generate-synthetic` | Generate NBFM / aviation AM training IQ (not in RadioML/CSPB) |
+| `rmv scan run <dir>` | Discover OOT projects, validate modulators (prompts before writes) |
+| `rmv scan run <dir>` | Default: only `gr-qradiolink`, `gr-packet-protocols`, `gr-sleipnir` |
+| `rmv scan run <dir> --filter a,b` | Override default include list |
+| `rmv scan run <dir> --all` | Scan every discovered OOT (minus built-in excludes) |
+| `rmv scan issues` | List findings from local `.rmv_findings.db` |
+| `rmv scan issues --since 2026-05-31T15:00:00` | Only issues from the current (or recent) scan run |
+| `rmv scan purge --keep-latest` | Delete stale validations/issues; keep latest per block (prompts) |
+| `rmv scan status` | Database summary |
+
+After training the family classifier, verify before ONNX export:
+
+```bash
+uv run rmv verify-family --checkpoint-dir checkpoints
+```
+
+This tests RadioML only for AM/QAM/FSK/PAM (valid 128-sample upsamples). **WBFM, BPSK, and QPSK are verified via synthetic IQ** — the same source used in training. Do not use a manual script that classifies RadioML `WBFM`/`BPSK` pickle rows; those windows lack FM/PSK structure after upsampling and will predict AM even when the model is correct.
+
+Scan IQ sidecars use exact classifier class names (for example `NBFM_25`, not `NBFM`),
+loaded from `models/*.meta.json` or `checkpoints/best_*_meta.json` at startup.
+Reference NBFM IQ is generated with the same `dataset.synthetic` path as training.
+
+`rmv scan` skips by default (no prompts): GNU Radio framework trees (`gnuradio`,
+`gnuradio4`, `gnuradio3`); cryptography OOT (`gr-nacl`, `gr-openssl`,
+`gr-linux-crypto`); audio codecs (`gr-opus`); spread-spectrum reference
+(`GR-K-GDSS`); and README modes DSSS/GDSS (noise-like — classifier not meaningful).
+Add more names under `[scan] exclude_projects` in `.rmv_config.toml`.
 
 Logs go to **stderr**; JSON results to **stdout** for CI pipelines.
 

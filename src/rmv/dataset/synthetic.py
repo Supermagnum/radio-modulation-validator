@@ -7,6 +7,9 @@ Modes generated:
   NBFM_50    — Amateur narrowband FM, ±5.0 kHz deviation, 25 kHz channel
   AM_AIR_25K — Aviation DSB-AM, 25 kHz channel spacing (ICAO Annex 10)
   AM_AIR_833 — Aviation DSB-AM, 8.33 kHz channel spacing (EU Reg. 1079/2012)
+  WBFM       — Broadcast FM, 75 kHz deviation (replaces weak RadioML WBFM)
+  BPSK       — GNU Radio digital.psk_mod, 8 sps @ 48 kHz
+  QPSK       — GNU Radio digital.psk_mod, 8 sps @ 48 kHz
 
 IMPORTANT: This module uses GNU Radio built-in blocks and numpy/scipy only.
 No OOT (out-of-tree) modules are used. This is intentional —
@@ -64,16 +67,37 @@ SNR_DB_LEVELS: list[float] = [float(s) for s in range(-20, 32, 2)]
 NBFM_TONE_HZ = (300.0, 500.0, 1000.0, 2000.0, 3000.0)
 AVIATION_TONE_HZ = (500.0, 1000.0, 2000.0)
 
-SyntheticMode = Literal["nbfm25", "nbfm50", "am_air_25k", "am_air_833"]
+SyntheticMode = Literal[
+    "nbfm25",
+    "nbfm50",
+    "am_air_25k",
+    "am_air_833",
+    "wbfm",
+    "bpsk",
+    "qpsk",
+]
 
 MODE_TO_CLASS: dict[SyntheticMode, str] = {
     "nbfm25": "NBFM_25",
     "nbfm50": "NBFM_50",
     "am_air_25k": "AM_AIR_25K",
     "am_air_833": "AM_AIR_833",
+    "wbfm": "WBFM",
+    "bpsk": "BPSK",
+    "qpsk": "QPSK",
 }
 
-ALL_MODES: tuple[SyntheticMode, ...] = ("nbfm25", "nbfm50", "am_air_25k", "am_air_833")
+ALL_MODES: tuple[SyntheticMode, ...] = (
+    "nbfm25",
+    "nbfm50",
+    "am_air_25k",
+    "am_air_833",
+    "wbfm",
+    "bpsk",
+    "qpsk",
+)
+
+DEFAULT_PSK_SAMPLES_PER_SYMBOL = 8
 
 @dataclass(frozen=True)
 class VariantSpec:
@@ -81,9 +105,10 @@ class VariantSpec:
 
     class_name: str
     max_bandwidth_hz: float
-    kind: Literal["nbfm", "am_air"]
+    kind: Literal["nbfm", "am_air", "wbfm", "psk"]
     max_dev: float | None = None
     am_variant: Literal["25k", "833"] | None = None
+    psk_order: int | None = None
 
 
 VARIANT_SPECS: dict[str, VariantSpec] = {
@@ -91,6 +116,9 @@ VARIANT_SPECS: dict[str, VariantSpec] = {
     "NBFM_50": VariantSpec("NBFM_50", 13000.0, "nbfm", max_dev=5000.0),
     "AM_AIR_25K": VariantSpec("AM_AIR_25K", 8000.0, "am_air", am_variant="25k"),
     "AM_AIR_833": VariantSpec("AM_AIR_833", 6500.0, "am_air", am_variant="833"),
+    "WBFM": VariantSpec("WBFM", 200000.0, "wbfm", max_dev=75000.0),
+    "BPSK": VariantSpec("BPSK", 12000.0, "psk", psk_order=2),
+    "QPSK": VariantSpec("QPSK", 12000.0, "psk", psk_order=4),
 }
 
 
@@ -339,6 +367,143 @@ def _complex_to_iq_chunk(iq: np.ndarray) -> np.ndarray:
     return np.stack([seg.real, seg.imag], axis=0).astype(np.float32)
 
 
+def _bandlimit_audio_wbfm(
+    audio: np.ndarray,
+    sample_rate_hz: float,
+    high_hz: float = 15000.0,
+) -> np.ndarray:
+    """Band-limit WBFM audio (roughly 50 Hz - 15 kHz)."""
+    sos = butter(6, [50.0, high_hz], btype="bandpass", fs=sample_rate_hz, output="sos")
+    return sosfilt(sos, audio).astype(np.float32)
+
+
+def _generate_wbfm_audio(
+    n_samples: int,
+    sample_rate_hz: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Tones and band-limited noise for broadcast FM audio."""
+    t = np.arange(n_samples, dtype=np.float64) / sample_rate_hz
+    if rng.random() < 0.5:
+        freq = float(rng.uniform(200.0, 8000.0))
+        audio = np.sin(2 * np.pi * freq * t).astype(np.float32)
+    else:
+        audio = rng.standard_normal(n_samples).astype(np.float32)
+    audio = _bandlimit_audio_wbfm(audio, sample_rate_hz)
+    peak = float(np.max(np.abs(audio)))
+    if peak > 1e-6:
+        audio = (audio / peak * 0.9).astype(np.float32)
+    return audio
+
+
+def _psk_modulate_gnuradio(
+    order: int,
+    n_samples: int,
+    sample_rate_hz: int,
+    *,
+    samples_per_symbol: int = DEFAULT_PSK_SAMPLES_PER_SYMBOL,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """PSK via GNU Radio digital.psk_mod (random byte source)."""
+    from gnuradio import blocks, digital, gr
+
+    nbytes = max(n_samples // samples_per_symbol + 8, 64)
+    data = rng.integers(0, 256, size=nbytes, dtype=np.uint8).tolist()
+    tb = gr.top_block()
+    src = blocks.vector_source_b(data, False)
+    mod = digital.psk_mod(
+        constellation_points=order,
+        mod_code="gray",
+        differential=False,
+        samples_per_symbol=samples_per_symbol,
+    )
+    snk = blocks.vector_sink_c()
+    tb.connect(src, mod, snk)
+    tb.run()
+    out = np.array(snk.data(), dtype=np.complex64)
+    if len(out) < n_samples:
+        reps = int(np.ceil(n_samples / max(len(out), 1)))
+        out = np.tile(out, reps)[:n_samples]
+    return out[:n_samples]
+
+
+def _psk_modulate_numpy(
+    order: int,
+    n_samples: int,
+    *,
+    samples_per_symbol: int = DEFAULT_PSK_SAMPLES_PER_SYMBOL,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Fallback PSK when GNU Radio is unavailable."""
+    n_syms = n_samples // samples_per_symbol + 2
+    if order == 2:
+        bits = rng.integers(0, 2, size=n_syms)
+        syms = (2 * bits - 1).astype(np.float32)
+        pulse = np.repeat(syms, samples_per_symbol)[:n_samples]
+        return pulse.astype(np.complex64)
+    bits = rng.integers(0, order, size=n_syms)
+    mapping = np.exp(2j * np.pi * bits / order)
+    return np.repeat(mapping, samples_per_symbol)[:n_samples].astype(np.complex64)
+
+
+def _generate_wbfm_chunk(
+    *,
+    max_dev: float,
+    sample_rate_hz: float,
+    snr_db: float,
+    use_gnuradio: bool,
+    rng: np.random.Generator,
+    apply_channel: bool = True,
+) -> np.ndarray:
+    """Generate one WBFM chunk (2, 1024) with broadcast deviation."""
+    quad_rate = int(sample_rate_hz)
+    audio_len = CHUNK_SAMPLES + 64
+    audio = _generate_wbfm_audio(audio_len, float(quad_rate), rng)
+    if use_gnuradio:
+        _require_gnuradio()
+        iq = _nbfm_modulate_gnuradio(audio, quad_rate, quad_rate, max_dev)
+    else:
+        iq = _nbfm_modulate_numpy(audio.astype(np.float32), quad_rate, max_dev)
+    if apply_channel:
+        offset = float(rng.uniform(-DEFAULT_FREQ_OFFSET_HZ, DEFAULT_FREQ_OFFSET_HZ))
+        iq = add_freq_offset(iq, offset, sample_rate_hz)
+        iq = add_awgn(iq, snr_db)
+    return normalise_unit_power(_complex_to_iq_chunk(iq))
+
+
+def _generate_psk_chunk(
+    *,
+    order: int,
+    sample_rate_hz: float,
+    snr_db: float,
+    use_gnuradio: bool,
+    rng: np.random.Generator,
+    apply_channel: bool = True,
+) -> np.ndarray:
+    """Generate one BPSK or QPSK chunk (2, 1024)."""
+    quad_rate = int(sample_rate_hz)
+    need = CHUNK_SAMPLES + DEFAULT_PSK_SAMPLES_PER_SYMBOL * 4
+    if use_gnuradio:
+        try:
+            _require_gnuradio()
+            __import__("gnuradio.digital")
+            iq = _psk_modulate_gnuradio(
+                order,
+                need,
+                quad_rate,
+                rng=rng,
+            )
+        except ImportError:
+            iq = _psk_modulate_numpy(order, need, rng=rng)
+    else:
+        iq = _psk_modulate_numpy(order, need, rng=rng)
+    if apply_channel:
+        offset = float(rng.uniform(-DEFAULT_FREQ_OFFSET_HZ, DEFAULT_FREQ_OFFSET_HZ))
+        iq = add_freq_offset(iq, offset, sample_rate_hz)
+        iq = add_awgn(iq, snr_db)
+    return normalise_unit_power(_complex_to_iq_chunk(iq))
+
+
 def _generate_nbfm_chunk(
     *,
     max_dev: float,
@@ -511,6 +676,32 @@ def generate_variant_chunks(
                 audio_rate_hz=audio_rate_hz,
                 modulation_index=modulation_index,
                 snr_db=snr_db,
+                rng=gen,
+                apply_channel=apply_channel,
+            )
+    elif spec.kind == "wbfm":
+        dev = max_dev if max_dev is not None else spec.max_dev
+        if dev is None:
+            raise ValueError(f"{class_name}: max_dev required for WBFM")
+        for i in range(n_chunks):
+            chunks[i] = _generate_wbfm_chunk(
+                max_dev=dev,
+                sample_rate_hz=sample_rate_hz,
+                snr_db=snr_db,
+                use_gnuradio=use_gnuradio,
+                rng=gen,
+                apply_channel=apply_channel,
+            )
+    elif spec.kind == "psk":
+        order = spec.psk_order
+        if order is None:
+            raise ValueError(f"{class_name}: psk_order required")
+        for i in range(n_chunks):
+            chunks[i] = _generate_psk_chunk(
+                order=order,
+                sample_rate_hz=sample_rate_hz,
+                snr_db=snr_db,
+                use_gnuradio=use_gnuradio,
                 rng=gen,
                 apply_channel=apply_channel,
             )

@@ -34,6 +34,8 @@
     "OOK",
     "OQPSK",
     "PAM4",
+    "QAM16",
+    "QAM64",
     "QPSK",
     "WBFM"
   ],

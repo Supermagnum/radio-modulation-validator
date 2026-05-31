@@ -2,5 +2,5 @@
 # Run: rmv checksum update
 # Verify: rmv checksum verify
 
-1194be6db9558d6f2b5fba8d7dd7107118c2f6b102ef205c235f6f0e1d644af7  family_classifier.onnx
-f4b0dd8bbe29f57910d9c4c601374b4a32fa02e6e38e9aa4cd14e4f98794de1b  order_classifier.onnx
+c0a370a249926853d1886bf747d0bafaee2808deda2ccec058cc865c4296a229  family_classifier.onnx
+48e12a3e9ddc84e7786b84a4dde998318732301ea3c7ddaadd57b74644d6e05b  order_classifier.onnx
