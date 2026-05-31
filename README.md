@@ -318,6 +318,11 @@ Scan IQ sidecars use exact classifier class names (for example `NBFM_25`, not `N
 loaded from `models/*.meta.json` or `checkpoints/best_*_meta.json` at startup.
 Reference NBFM IQ is generated with the same `dataset.synthetic` path as training.
 
+Many OOT repos ship two branches: **`main`** (GNU Radio 3.10, `find_package(gnuradio)`) and
+**`gnuradio4`** (GNU Radio 4.x). `rmv scan run` validates the **checked-out tree** only; commit
+`VALIDATION_REPORT.md` on each branch you care about (reference IQ is numpy/built-in, not built
+from the OOT blocks, so results are usually the same per project).
+
 `rmv scan` skips by default (no prompts): GNU Radio framework trees (`gnuradio`,
 `gnuradio4`, `gnuradio3`); cryptography OOT (`gr-nacl`, `gr-openssl`,
 `gr-linux-crypto`); audio codecs (`gr-opus`); spread-spectrum reference
