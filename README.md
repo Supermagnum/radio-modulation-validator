@@ -50,6 +50,12 @@ for the exact layout and sidecar JSON.
 - [Training datasets](#training-datasets)
   - [Why synthetic training data is used](#why-synthetic-training-data-is-used)
 - [Retraining models](#retraining-models)
+- [Extending rmv](#extending-rmv)
+  - [Paths and configuration](#paths-and-configuration-no-hardcoded-paths)
+  - [Larger training sets](#larger-training-sets)
+  - [Add a new order mode (CNN)](#add-a-new-order-mode-cnn)
+  - [Write a custom-mode plugin](#write-a-custom-mode-plugin)
+  - [Add an OOT project to scan](#add-an-oot-project-to-scan)
 - [Dataset version pinning (released models)](#dataset-version-pinning-released-models)
 - [Validation methodology](#validation-methodology)
 - [Understanding validation results](#understanding-validation-results)
@@ -708,6 +714,173 @@ uv run rmv export --checkpoint checkpoints/best_family_classifier.pt
 uv run rmv export --checkpoint checkpoints/best_order_classifier.pt
 uv run rmv checksum update
 ```
+
+## Extending rmv
+
+This section covers growing training data, adding classifier labels, custom plugins, and
+new GNU Radio OOT trees to `rmv scan`. All workflows use **CLI flags, environment
+variables, or config files** — the Python codebase must not embed machine-specific
+absolute paths (enforced in CI; see [Paths and configuration](#paths-and-configuration-no-hardcoded-paths)).
+
+### Paths and configuration (no hardcoded paths)
+
+| What | How to set it |
+|------|----------------|
+| Training datasets | `rmv dataset download --dest <dir>`; `rmv train --datasets-dir <dir>` |
+| Synthetic IQ output | `rmv dataset generate-synthetic --output <dir>` |
+| Preprocess cache | `rmv train --cache <dir>` |
+| Checkpoints / export | `rmv train --output <dir>`; `rmv export --checkpoint <path>` |
+| ONNX models | `rmv validate --models-dir <dir>` (default: `models/` under repo root) |
+| Scan root (OOT parent) | `rmv scan run <dir>` or omit to auto-detect parent of this repo |
+| Scan IQ output | `rmv scan run <dir> --iq-output <dir>` (default: `.scan_iq/`) |
+| Findings database | `.rmv_findings.db` next to `pyproject.toml` (see `rmv scan status`) |
+
+Optional project config at the repository root (`.rmv_config.toml`):
+
+```toml
+[scan]
+root = "../github-projects"          # optional default scan parent
+include_projects = ["gr-my-oot", "gr-qradiolink"]
+exclude_projects = ["gnuradio", "gnuradio4"]
+iq_output = ".scan_iq"
+```
+
+Use **relative paths** from the directory where you run `rmv`, or absolute paths on your
+machine in config and shell commands — never commit personal paths into `src/`.
+`find_rmv_project_root()` locates `pyproject.toml` so defaults resolve from the clone
+location, not from a fixed install path.
+
+### Larger training sets
+
+Public datasets (RadioML, HISARMOD, CSPB R2) provide the bulk of training diversity.
+Download and verify them under a directory you choose:
+
+```bash
+rmv dataset download --dest datasets/
+rmv dataset verify
+```
+
+Synthetic data scales with `--chunks-per-snr` (default **1000**) and the built-in
+**26 SNR levels** (-20 to +30 dB in 2 dB steps). Approximate synthetic sample count:
+
+`chunks_per_snr × 26 × number_of_modes`
+
+Example — roughly **2.5M** synthetic chunks for all 19 modes at default density:
+
+```bash
+uv run rmv dataset generate-synthetic \
+  --chunks-per-snr 5000 \
+  --output datasets/synthetic/ \
+  --seed 42
+```
+
+Combine with public data in training (paths are arguments, not hardcoded):
+
+```bash
+rm -rf .cache/
+uv run rmv train \
+  --datasets-dir datasets \
+  --synthetic datasets/synthetic/synthetic.npz \
+  --cache .cache \
+  --output checkpoints \
+  --device cuda \
+  -y
+```
+
+Increase `chunks_per_snr` until validation accuracy on held-out synthetic chunks stabilises.
+After changing dataset layout or class list, delete `.cache/` so preprocessing shards rebuild.
+See [docs/dataset_preparation.md](docs/dataset_preparation.md).
+
+### Add a new order mode (CNN)
+
+Use this when the modulation should be classified by the **family/order ONNX models**
+(not a custom plugin). Work in the repository clone; do not import OOT modules under test
+into `src/rmv/dataset/synthetic.py` or `src/rmv/scan/iq_generator.py`.
+
+1. **Generator** — in `src/rmv/dataset/synthetic.py`:
+   - Add a `VariantSpec` entry (bandwidth, `kind`, protocol parameters).
+   - Implement `generate_*` / wire into `generate_variant_chunks()`.
+   - Add CLI key to `MODE_TO_CLASS`, `ALL_MODES`, and bandwidth verify helpers.
+   - Add tests in `tests/test_synthetic.py` (structure + occupied BW).
+
+2. **Label maps** — in `src/rmv/constants.py`:
+   - Append class name to `SYNTHETIC_CLASSES` and `SYNTHETIC_TO_FAMILY`.
+   - `ORDER_CLASSES` updates automatically from dataset unions.
+
+3. **Validation aliases** (if needed) — in `src/rmv/validate.py`:
+   - Extend `ORDER_ALIASES` or `SSB_AMBIGUOUS_ORDERS` for known ambiguities.
+
+4. **Scan reference** (if the mode appears in OOT READMEs) — in `src/rmv/scan/mode_table.py`:
+   - Add `ModeSpec(mode_name, expected_family, expected_order, generation_method)`.
+   - Use `generation_method="synthetic"` and reference IQ via `_gen_synthetic_scan_chunks()`,
+     or `numpy` / `gr3_builtin` with built-in GNU Radio only.
+   - Add the mode name to `KNOWN_MODE_NAMES` in `src/rmv/scan/readme_parser.py` if README
+     parsing should detect it.
+
+5. **Retrain and ship** — generate synthetic NPZ, `rmv train --order-only` (or full train),
+   `rmv export`, `rmv checksum update`, copy ONNX + meta into `models/`, re-run scan:
+
+   ```bash
+   rm -rf .scan_iq/
+   uv run rmv scan run <oot-parent-dir> --yes --yes-report
+   ```
+
+CI runs `tests/test_synthetic.py::test_no_oot_imports` to block OOT imports in synthetic
+and scan generator code.
+
+### Write a custom-mode plugin
+
+Use a plugin when the waveform is **not** a single standard family/order label (for example
+eight parallel QPSK carriers in one wideband capture). The CNN is skipped; a Python plugin
+checks structure, spacing, and constellation metrics.
+
+Full guide: [docs/contributing_plugins.md](docs/contributing_plugins.md). Summary:
+
+1. Subclass `CustomModeValidator` in `src/rmv/plugins/base.py` (copy
+   `src/rmv/plugins/sleipnir_8qpsk.py` as a template).
+2. Register in `src/rmv/plugins/registry.py` (`_register_builtin_plugins()`).
+3. Add tests in `tests/test_plugins.py` using small synthetic IQ (no large binaries in git).
+4. Add `ModeSpec(..., expected_family="custom", expected_order="<mode_id>", generation_method="plugin")`
+   in `src/rmv/scan/mode_table.py` for scan reference IQ generation.
+5. Sidecar for validate: `"expected_family": "custom"`, `"expected_order": "<mode_id>"`.
+
+```bash
+rmv plugins list
+rmv plugins describe sleipnir_8qpsk
+rmv validate iq_samples/<repo>/<block>.iq
+```
+
+### Add an OOT project to scan
+
+`rmv scan` discovers GNU Radio OOT projects under the directory you pass (sibling folders
+named `gr-*` with `CMakeLists.txt` and/or `grc/*.block.yml`). It does not modify OOT
+source trees.
+
+1. **Layout** — place the OOT repo next to others (typical: parent folder containing
+   `radio-modulation-validator` and `gr-my-oot/`).
+
+2. **README** — list modulation mode names in the project `README.md`. The scanner parses
+   known names (see `KNOWN_MODE_NAMES` in `src/rmv/scan/readme_parser.py`). Add new
+   names there and a matching `ModeSpec` in `mode_table.py`.
+
+3. **Include in scan** — default scan only runs
+   `gr-qradiolink`, `gr-packet-protocols`, `gr-sleipnir`. To scan your project:
+
+   ```bash
+   rmv scan run <oot-parent-dir> --filter gr-my-oot --yes --yes-report
+   ```
+
+   Or add to `.rmv_config.toml` `include_projects`, or use `--all` to scan every discovered
+   OOT (minus framework/crypto exclusions).
+
+4. **Outputs** — reference `.iq` + `.json` under `--iq-output` (default `.scan_iq/<project>/`),
+   `VALIDATION_REPORT.md` in the OOT repo (with `--yes-report`), rows in `.rmv_findings.db`.
+
+5. **GNU Radio 3** — optional `--gr3-prefix` for built-in reference generators that use
+   GNU Radio; GR4-only trees may skip numpy/builtin modes until a GR4 generator exists.
+
+Exclude framework trees (`gnuradio`, `gnuradio4`) and non-RF modules via
+`[scan] exclude_projects` in `.rmv_config.toml` (see [CLI](#cli) scan section).
 
 ## Dataset version pinning (released models)
 
