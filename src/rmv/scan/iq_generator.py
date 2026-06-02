@@ -13,10 +13,13 @@ from scipy.signal import hilbert, lfilter
 
 from rmv.dataset.preprocess import normalise_unit_power
 from rmv.dataset.synthetic import (
+    DEFAULT_FREQ_OFFSET_HZ,
     SYNTHETIC_VARIANT_ORDERS,
     _gaussian_filter,
     _generate_nbfm_chunk,
     _generate_psk_chunk,
+    add_awgn,
+    add_freq_offset,
     generate_variant_chunks,
 )
 from rmv.scan.class_vocab import ClassifierVocab, resolve_classifier_labels
@@ -35,6 +38,25 @@ logger = logging.getLogger(__name__)
 CHUNK_SAMPLES = 1024
 SAMPLE_RATE_HZ = 48000.0
 N_CHUNKS = 16
+
+# Per-family AWGN for scan reference IQ (short 1024-sample windows are noise-sensitive).
+SCAN_SNR_DB_BY_FAMILY: dict[str, float] = {
+    "FM": 20.0,
+    "FSK": 15.0,
+    "PSK": 15.0,
+    "AM": 20.0,
+    "QAM": 20.0,
+    "custom": 20.0,
+}
+DEFAULT_SCAN_SNR_DB = 15.0
+
+# Generic numpy M-FSK (2FSK/4FSK/8FSK) worked clean; only normalise per chunk.
+NUMPY_CPFSK_MODES = frozenset({"2FSK", "4FSK", "8FSK"})
+
+
+def scan_snr_for_family(expected_family: str) -> float:
+    """AWGN level (dB) for scan reference chunks of a modulation family."""
+    return SCAN_SNR_DB_BY_FAMILY.get(expected_family.upper(), DEFAULT_SCAN_SNR_DB)
 # Symmetric tone spacing for M-FSK (Hz); matches training-data frequency deviation scale.
 FSK_DEVIATION_HZ = 500.0
 FSK_SAMPLES_PER_SYMBOL = 8
@@ -70,6 +92,7 @@ def _write_iq_and_sidecar(
     generation_method: str,
     gr_env_used: str,
     notes: str,
+    snr_db: float | None = None,
 ) -> GeneratedIQ:
     out_dir = output_dir / project_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -88,7 +111,7 @@ def _write_iq_and_sidecar(
         "expected_order": expected_order,
         "sample_rate_hz": int(SAMPLE_RATE_HZ),
         "center_freq_hz": 0,
-        "snr_db": None,
+        "snr_db": snr_db,
         "notes": notes,
     }
     sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
@@ -105,30 +128,53 @@ def _write_iq_and_sidecar(
     )
 
 
-def _chunks_from_complex(signal: np.ndarray, n_chunks: int = N_CHUNKS) -> np.ndarray:
+def _chunks_from_complex(
+    signal: np.ndarray,
+    n_chunks: int = N_CHUNKS,
+    *,
+    expected_family: str | None = None,
+    snr_db: float | None = None,
+    rng: np.random.Generator | None = None,
+    apply_channel: bool = True,
+) -> np.ndarray:
+    """
+    Split a baseband waveform into N_CHUNKS scan chunks.
+
+    When apply_channel is True: per-chunk frequency offset, AWGN at family-specific
+    snr_db, then unit-power normalisation (matches synthetic training pipeline).
+    When False: unit-power normalisation only (plugin composites, generic CPFSK).
+    """
+    gen = rng or np.random.default_rng(42)
+    level = snr_db if snr_db is not None else scan_snr_for_family(expected_family or "")
     need = n_chunks * CHUNK_SAMPLES
-    if len(signal) < need:
-        reps = int(np.ceil(need / max(len(signal), 1)))
-        signal = np.tile(signal, reps)[:need]
-    signal = signal[:need]
+    sig = np.asarray(signal, dtype=np.complex64).ravel()
+    if len(sig) < need:
+        reps = int(np.ceil(need / max(len(sig), 1)))
+        sig = np.tile(sig, reps)[:need]
+    sig = sig[:need]
     chunks = np.zeros((n_chunks, 2, CHUNK_SAMPLES), dtype=np.float32)
     for i in range(n_chunks):
-        seg = signal[i * CHUNK_SAMPLES : (i + 1) * CHUNK_SAMPLES]
-        chunks[i] = normalise_unit_power(
-            np.stack([seg.real, seg.imag], axis=0).astype(np.float32)
-        )
+        seg = sig[i * CHUNK_SAMPLES : (i + 1) * CHUNK_SAMPLES]
+        iq = seg.copy()
+        if apply_channel:
+            offset = float(gen.uniform(-DEFAULT_FREQ_OFFSET_HZ, DEFAULT_FREQ_OFFSET_HZ))
+            iq = add_freq_offset(iq, offset, SAMPLE_RATE_HZ)
+            iq = add_awgn(iq, level, rng=gen)
+        chunk_iq = np.stack([iq.real, iq.imag], axis=0).astype(np.float32)
+        chunks[i] = normalise_unit_power(chunk_iq)
     return chunks
 
 
 def _gen_psk_scan_chunks(order: int, *, use_gnuradio: bool) -> np.ndarray:
     """BPSK/QPSK/8PSK via synthetic generator (proper I/Q, not real-only)."""
     rng = np.random.default_rng(42)
+    snr = scan_snr_for_family("PSK")
     chunks = np.zeros((N_CHUNKS, 2, CHUNK_SAMPLES), dtype=np.float32)
     for i in range(N_CHUNKS):
         chunks[i] = _generate_psk_chunk(
             order=order,
             sample_rate_hz=SAMPLE_RATE_HZ,
-            snr_db=20.0,
+            snr_db=snr,
             use_gnuradio=use_gnuradio,
             rng=rng,
             apply_channel=True,
@@ -136,13 +182,20 @@ def _gen_psk_scan_chunks(order: int, *, use_gnuradio: bool) -> np.ndarray:
     return chunks
 
 
-def _gen_synthetic_scan_chunks(class_name: str) -> np.ndarray:
-    """Reference IQ from rmv.dataset.synthetic (protocol 4FSK, squelch, packet)."""
+def _synthetic_class_for_scan(spec: ModeSpec) -> str:
+    """Map scan mode to synthetic VARIANT_SPECS class name."""
+    if spec.mode_name == "GMSK":
+        return "GMSK_BT03"
+    return spec.expected_order
+
+
+def _gen_synthetic_scan_chunks(class_name: str, *, expected_family: str) -> np.ndarray:
+    """Reference IQ from rmv.dataset.synthetic (protocol 4FSK, squelch, packet, GMSK)."""
     rng = np.random.default_rng(42)
     return generate_variant_chunks(
         class_name,
         N_CHUNKS,
-        snr_db=20.0,
+        snr_db=scan_snr_for_family(expected_family),
         sample_rate_hz=SAMPLE_RATE_HZ,
         use_gnuradio=False,
         rng=rng,
@@ -161,7 +214,7 @@ def _gen_nbfm_scan_chunks(*, use_gnuradio: bool) -> np.ndarray:
             sample_rate_hz=SAMPLE_RATE_HZ,
             audio_rate_hz=8000,
             class_name="NBFM_25",
-            snr_db=20.0,
+            snr_db=scan_snr_for_family("FM"),
             use_gnuradio=use_gnuradio,
             rng=rng,
             apply_channel=True,
@@ -190,11 +243,9 @@ def _gen_ssb_numpy() -> np.ndarray:
         + 0.4 * np.sin(2 * np.pi * 450 * t)
         + 0.2 * np.sin(2 * np.pi * 1200 * t)
     )
-    # Hilbert of a pure tone is constant-envelope (looks like PSK); form RF DSB then
-    # take analytic signal so envelope varies like real SSB.
-    fc = 1500.0
-    dsb = (1.0 + 0.7 * audio) * np.cos(2 * np.pi * fc * t)
-    return hilbert(dsb).astype(np.complex64)
+    # Baseband analytic SSB (Hilbert of voice-band audio). Avoid RF offset here:
+    # offset SSB at fc looked like NBFM/FM to the family classifier.
+    return hilbert(audio).astype(np.complex64)
 
 
 def _gen_fsk_numpy(
@@ -441,7 +492,7 @@ def generate_iq_for_project(
         if spec.generation_method == "plugin":
             if spec.expected_order == "sleipnir_8qpsk":
                 signal = _gen_sleipnir_numpy()
-                chunks = _chunks_from_complex(signal)
+                chunks = _chunks_from_complex(signal, apply_channel=False)
                 note = spec.note + " Reference composite IQ for plugin validation."
                 results.append(
                     _write_iq_and_sidecar(
@@ -454,6 +505,7 @@ def generate_iq_for_project(
                         generation_method="plugin",
                         gr_env_used=gr_env_used_label,
                         notes=note,
+                        snr_db=None,
                     )
                 )
             continue
@@ -508,42 +560,62 @@ def generate_iq_for_project(
             continue
 
         use_gr = gr3_env is not None and spec.generation_method == "gr3_builtin"
+        ref_snr_db: float | None = None
         if expected_order == "NBFM_25":
             chunks = _gen_nbfm_scan_chunks(use_gnuradio=use_gr)
             method = "gr3_builtin" if use_gr else "numpy"
             env_label = "gr3" if use_gr else "none"
+            ref_snr_db = scan_snr_for_family("FM")
         elif spec.mode_name == "BPSK":
             chunks = _gen_psk_scan_chunks(2, use_gnuradio=use_gr)
             method = "gr3_builtin" if use_gr else "numpy"
             env_label = "gr3" if use_gr else "none"
+            ref_snr_db = scan_snr_for_family("PSK")
         elif spec.mode_name in ("QPSK", "SOQPSK"):
             chunks = _gen_psk_scan_chunks(4, use_gnuradio=use_gr)
             method = "gr3_builtin" if use_gr else "numpy"
             env_label = "gr3" if use_gr else "none"
+            ref_snr_db = scan_snr_for_family("PSK")
         elif spec.mode_name == "8PSK":
             chunks = _gen_psk_scan_chunks(8, use_gnuradio=use_gr)
             method = "gr3_builtin" if use_gr else "numpy"
             env_label = "gr3" if use_gr else "none"
+            ref_snr_db = scan_snr_for_family("PSK")
         elif (
             spec.generation_method == "synthetic"
             or spec.expected_order in SYNTHETIC_VARIANT_ORDERS
         ):
-            chunks = _gen_synthetic_scan_chunks(spec.expected_order)
+            chunks = _gen_synthetic_scan_chunks(
+                _synthetic_class_for_scan(spec),
+                expected_family=expected_family,
+            )
             method = "synthetic"
             env_label = "none"
+            ref_snr_db = scan_snr_for_family(expected_family)
         elif spec.expected_order == "GMSK" or spec.mode_name in (
-            "GMSK",
             "FreeDV",
-            "D-Star",
-            "DSTAR",
         ):
             signal, method, env_label = _gen_gmsk_scan_signal(
                 spec.mode_name, use_gnuradio=use_gr
             )
-            chunks = _chunks_from_complex(signal)
+            ref_snr_db = scan_snr_for_family("FSK")
+            chunks = _chunks_from_complex(
+                signal,
+                expected_family="FSK",
+                snr_db=ref_snr_db,
+            )
         else:
             signal, method, env_label = _generate_signal(spec, gr3_env)
-            chunks = _chunks_from_complex(signal)
+            if spec.mode_name in NUMPY_CPFSK_MODES:
+                chunks = _chunks_from_complex(signal, apply_channel=False)
+                ref_snr_db = None
+            else:
+                ref_snr_db = scan_snr_for_family(expected_family)
+                chunks = _chunks_from_complex(
+                    signal,
+                    expected_family=expected_family,
+                    snr_db=ref_snr_db,
+                )
         notes = (
             "Generated by rmv scan using built-in GNU Radio / numpy reference only. "
             "Project OOT blocks were not used."
@@ -564,6 +636,7 @@ def generate_iq_for_project(
                 generation_method=method,
                 gr_env_used=env_label,
                 notes=notes,
+                snr_db=ref_snr_db,
             )
         )
 

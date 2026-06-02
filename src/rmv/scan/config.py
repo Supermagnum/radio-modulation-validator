@@ -14,6 +14,7 @@ class ScanConfig:
     gr3_prefix: str | None = None
     gr4_prefix: str | None = None
     iq_output: str = ".scan_iq"
+    scan_root: str | None = None
     default_yes: bool = False
     exclude_projects: tuple[str, ...] = ()
     include_projects: tuple[str, ...] = ()
@@ -44,10 +45,12 @@ def load_scan_config(root: Path | None = None) -> ScanConfig:
     if isinstance(include_raw, list):
         include_projects = tuple(str(x) for x in include_raw)
 
+    scan_root = section.get("root") or section.get("scan_root")
     return ScanConfig(
         gr3_prefix=section.get("gr3_prefix"),
         gr4_prefix=section.get("gr4_prefix"),
         iq_output=str(section.get("iq_output", ".scan_iq")),
+        scan_root=str(scan_root) if scan_root else None,
         default_yes=bool(section.get("default_yes", False)),
         exclude_projects=exclude_projects,
         include_projects=include_projects,

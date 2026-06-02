@@ -30,6 +30,8 @@
     "G3RUH",
     "GFSK",
     "GMSK",
+    "GMSK_BT03",
+    "GMSK_BT05",
     "M17",
     "MSK",
     "NBFM",

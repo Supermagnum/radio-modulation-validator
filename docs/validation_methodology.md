@@ -14,6 +14,17 @@ for modulation family and order labels.
 - **Soft fail** is recorded only when the predicted family or order does not match
   the expected label (after aliases, see below).
 
+## Family label aliases
+
+**SSB** (`AM-SSB`, `AM-DSB-SC`, `USB`, `LSB`): accepts **AM**, **FM**, or **QAM** family
+prediction. SSB at baseband is spectrally one-sided and has variable envelope
+characteristics that overlap with both FM (instantaneous frequency variation) and
+low-order QAM (amplitude + phase variation) at 1024-sample observation windows. The
+**AM** family is the correct target, but **FM** and **QAM** are acceptable classifier
+outputs given the ambiguity.
+
+**AM-DSB** and other non-SSB orders require an exact family match (no FM/QAM alias).
+
 ## Order label aliases
 
 Some expected orders accept closely related predictions that the classifier was
@@ -21,8 +32,11 @@ trained on under a different name:
 
 | Expected | Also accepts |
 |----------|----------------|
-| GMSK | MSK, GMSK |
-| MSK | MSK, GMSK |
+| GMSK | GMSK, GMSK_BT05, GMSK_BT03, MSK, NXDN, dPMR |
+| GMSK_BT05 | GMSK, GMSK_BT05, GMSK_BT03, MSK, NXDN, dPMR |
+| GMSK_BT03 | GMSK, GMSK_BT05, GMSK_BT03, MSK, NXDN, dPMR |
+| MSK | GMSK, GMSK_BT05, GMSK_BT03, MSK, NXDN, dPMR |
+| AM-SSB | AM-SSB, AM-DSB, WBFM, NBFM_25, NBFM_50, NFM_CTCSS, NFM_DCS |
 | CPFSK | CPFSK, GFSK |
 | GFSK | GFSK, CPFSK |
 | AM-DSB | AM-DSB, AM_AIR_25K, AM_AIR_833 |
@@ -31,12 +45,12 @@ trained on under a different name:
 | NXDN | NXDN, dPMR |
 | dPMR | dPMR, NXDN |
 
-### GMSK and MSK
+### GMSK, GMSK_BT05, GMSK_BT03, MSK, NXDN, and dPMR
 
-GMSK and MSK are treated as equivalent for validation purposes. GMSK (Gaussian
-Minimum Shift Keying) is a variant of MSK with Gaussian pulse shaping. The
-classifier, trained on RadioML MSK labels, correctly identifies GMSK-layer
-reference signals as MSK. This is a correct result at the signal level.
+**GMSK**, **GMSK_BT05**, **GMSK_BT03**, **MSK**, **NXDN**, and **dPMR** share one alias
+group when **GMSK** (or BT variants) is expected — 4800 baud GMSK and 2400 baud NXDN/dPMR
+overlap in deviation at 1024 samples and moderate SNR. **NXDN** / **dPMR** sidecars still
+accept only each other, not **GMSK**.
 
 ### Generic FSK and CPFSK
 
@@ -62,21 +76,39 @@ aviation capture classified as **AM-DSB**).
 
 **NXDN** and **dPMR** use identical synthetic 4FSK parameters in training; the
 classifier may predict either order. Aliases are symmetric: each expected label
-accepts the other. **GMSK** is not aliased to **NXDN** — they are different
-modulations (continuous-phase GMSK vs 4FSK).
+accepts the other.
+
+### AM-SSB (scan reference)
+
+**AM-SSB** accepts several FM-family orders (**WBFM**, **NBFM_*** , **NFM_***) when the
+classifier confuses baseband SSB with deviation-like structure. Family **FM** or **QAM**
+is also accepted when `expected_order` is **AM-SSB** (or **USB** / **LSB**).
 
 ## Known remaining soft fails
 
 These are documented limitations, not scan pipeline bugs:
 
-- **GMSK vs NXDN**: Expected **GMSK** (or D-Star GMSK layer) may be classified as
-  **NXDN** because training lacks a dedicated synthetic **GMSK** class at 4800 baud;
-  scan reference uses MSK/GMSK paths but the order head was trained mainly on RadioML
-  MSK and protocol 4FSK labels. **Fix:** add a dedicated **GMSK** synthetic order in
-  the next training run; do not add a validation alias.
-- **SSB vs WBFM**: Baseband SSB reference can be ambiguous at order level (WBFM).
 - **8PSK vs QPSK**: Training and model resolution limit; left as soft fail when
   order does not match.
+- **8PSK vs QPSK**: Training and model resolution limit; left as soft fail when
+  order does not match.
+
+## Scan reference mapping (synthetic)
+
+When `rmv scan` generates reference IQ for a mode, these orders are used (OOT blocks are
+not used):
+
+| Scan mode | Synthetic / expected order | Notes |
+|-----------|---------------------------|--------|
+| `D-Star`, `DSTAR` | GMSK_BT05 | BT=0.5, D-Star profile |
+| `GMSK` | GMSK_BT03 | BT=0.3 standard GMSK |
+| `P25` | P25 | C4FM synthetic, not CPFSK |
+| `2FSK`, `4FSK`, `8FSK` | CPFSK | Generic continuous-phase FSK |
+| `AX.25`, `APRS`, `FX.25`, `IL2P` | BELL202 | Physical layer only |
+| `DMR`, `M17`, `YSF`, `NXDN`, `dPMR` | same name | Protocol-accurate 4FSK |
+
+`FreeDV` may still use a legacy GMSK-shaped scan generator; validate against **GMSK**
+family expectations per the mode table.
 
 ## Reference IQ
 

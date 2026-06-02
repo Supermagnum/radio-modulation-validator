@@ -33,7 +33,13 @@ MODE_TABLE: dict[str, ModeSpec] = {
     "BPSK": ModeSpec("BPSK", "PSK", "BPSK", "gr3_builtin"),
     "QPSK": ModeSpec("QPSK", "PSK", "QPSK", "gr3_builtin"),
     "8PSK": ModeSpec("8PSK", "PSK", "8PSK", "gr3_builtin"),
-    "GMSK": ModeSpec("GMSK", "FSK", "GMSK", "gr3_builtin"),
+    "GMSK": ModeSpec(
+        "GMSK",
+        "FSK",
+        "GMSK",
+        "synthetic",
+        note="Scan reference: synthetic GMSK_BT03 (BT=0.3); OOT blocks expect GMSK.",
+    ),
     "2FSK": ModeSpec(
         "2FSK",
         "FSK",
@@ -79,8 +85,21 @@ MODE_TABLE: dict[str, ModeSpec] = {
         protocol_only=True,
         note="Protocol-accurate C4FM; framing not verified.",
     ),
-    "D-Star": ModeSpec("D-Star", "FSK", "GMSK", "gr3_builtin", protocol_only=True, note="GMSK layer only."),
-    "DSTAR": ModeSpec("D-Star", "FSK", "GMSK", "gr3_builtin", protocol_only=True),
+    "D-Star": ModeSpec(
+        "D-Star",
+        "FSK",
+        "GMSK_BT05",
+        "synthetic",
+        protocol_only=True,
+        note="D-Star GMSK BT=0.5; physical layer only (GNU Radio gmsk_mod reference).",
+    ),
+    "DSTAR": ModeSpec(
+        "D-Star",
+        "FSK",
+        "GMSK_BT05",
+        "synthetic",
+        protocol_only=True,
+    ),
     "NXDN": ModeSpec(
         "NXDN",
         "FSK",

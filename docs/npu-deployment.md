@@ -35,20 +35,21 @@ rmv checksum update
 rmv checksum verify
 ```
 
-`ModulationClassifier` and `rmv scan` prefer `*_int8.onnx` when those files exist.
+`ModulationClassifier` and `rmv scan` use INT8 for **family** when
+`family_classifier_int8.onnx` exists; **order** always uses FP32 `order_classifier.onnx`.
+
+Use `--family-only` if you only need family INT8 (recommended for 50-class order models).
 
 ## Workflow (K3 device, no cross-compile SDK)
 
-1. On the dev machine: `rmv export-quantised` (produces `*_int8.onnx` only).
-2. Copy `models/family_classifier_int8.onnx` and `models/order_classifier_int8.onnx`
-   to the K3.
+1. On the dev machine: `rmv export-quantised --family-only` (produces verified family INT8).
+2. Copy `models/family_classifier_int8.onnx` and `models/order_classifier.onnx` (FP32) to the K3.
 3. On the K3, with the SpacemiT SDK installed:
 
 ```bash
 spacemit-npu-convert models/family_classifier_int8.onnx \
   --precision int8 --output models/family_classifier.nb
-spacemit-npu-convert models/order_classifier_int8.onnx \
-  --precision int8 --output models/order_classifier.nb
+# Order: run FP32 on CPU or re-quantise on-device with larger calibration if needed
 ```
 
 Or use `rmv export-npu --calibration datasets/synthetic/synthetic.npz` on the K3.
@@ -61,27 +62,26 @@ Or use `rmv export-npu --calibration datasets/synthetic/synthetic.npz` on the K3
 models/
   family_classifier.onnx          # FP32 reference
   family_classifier_int8.onnx     # INT8 (CPU or NPU input)
-  family_classifier.nb              # NPU binary (local build only)
-  order_classifier.onnx
-  order_classifier_int8.onnx
-  order_classifier.nb
+  family_classifier.nb            # NPU binary (local build only)
+  order_classifier.onnx           # FP32 (always used for inference)
   *.meta.json
 ```
 
+`order_classifier_int8.onnx` is not deployed: INT8 verification typically fails for the
+50-class order head (>8% accuracy drop vs FP32 on the calibration set).
+
 ## Accuracy
 
-The **family** classifier uses static QDQ INT8 (calibrated on synthetic IQ). The
-**order** classifier (43 classes) may fall back to **dynamic** weight-only INT8 if
-static QDQ exceeds `--tolerance` on the calibration set (typical static agreement ~86%,
-dynamic ~99% on the same data).
+The **family** classifier uses static QDQ INT8 (calibrated on synthetic IQ) and must pass
+verification (default: FP32 vs INT8 top-1 disagreement ≤ `--tolerance`, 3.0%).
 
-`rmv export-quantised` compares FP32 and INT8 top-1 labels on the calibration set and
-fails if disagreement exceeds `--tolerance` (default 3.0%). Disable order fallback with
-`--no-order-dynamic-fallback`.
+The **order** classifier tries static QDQ, then dynamic weight-only INT8 if
+`--no-order-dynamic-fallback` is not set. If both exceed tolerance, export keeps FP32 only,
+removes any failed `order_classifier_int8.onnx`, and logs a warning (exit code 0 if family
+INT8 succeeded).
 
-If static order quantisation fails and you need static QDQ for NPU, increase
-`--calibration-chunks` or relax tolerance; NPU toolchains may require re-running
-`spacemit-npu-convert` on the K3 with device-specific calibration.
+Use `--family-only` to quantise only the family model. Use `--order-only` to attempt order
+INT8 in isolation (for experiments).
 
 ## Performance (K3 estimates)
 

@@ -267,6 +267,16 @@ def export_quantised_cmd(
         "--no-order-dynamic-fallback",
         help="Do not retry order classifier with dynamic INT8 if static QDQ fails verify",
     ),
+    family_only: bool = typer.Option(
+        False,
+        "--family-only",
+        help="Quantise only the family classifier",
+    ),
+    order_only: bool = typer.Option(
+        False,
+        "--order-only",
+        help="Quantise only the order classifier",
+    ),
     checksums: Path = typer.Option(Path("checksums.sha256"), "--checksums"),
     seed: int | None = typer.Option(42, "--seed"),
 ) -> None:
@@ -290,6 +300,8 @@ def export_quantised_cmd(
             checksums_path=checksums,
             seed=seed,
             order_dynamic_fallback=not no_order_dynamic_fallback,
+            family_only=family_only,
+            order_only=order_only,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         err_console.print(f"[red]{exc}[/]")

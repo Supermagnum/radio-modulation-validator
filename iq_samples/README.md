@@ -48,7 +48,8 @@ Valid `expected_family` values: `FM`, `FSK`, `PSK`, `QAM`, `AM`, `PAM`, `custom`
 
 Use exact `expected_order` labels from `models/order_classifier.meta.json` (for example
 `NBFM_25`, `CPFSK`, `DMR` — not informal names like `NBFM` or `4FSK`). Pass/fail rules
-and aliases (GMSK↔MSK) are in [docs/validation_methodology.md](../docs/validation_methodology.md).
+and order aliases (GMSK / GMSK_BT05 / GMSK_BT03 / MSK; NXDN↔dPMR; AM-DSB↔aviation AM)
+are in [docs/validation_methodology.md](../docs/validation_methodology.md).
 
 Run validation:
 

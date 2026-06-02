@@ -27,12 +27,12 @@ Packet radio physical layers (numpy/scipy):
   BELL202   — Bell 202 AFSK, mark=1200 Hz, space=2200 Hz, 1200 baud, NRZI
   G3RUH     — G3RUH 9600 baud direct FSK, +/-3500 Hz, Gaussian BT=0.5
 
+GMSK (GNU Radio digital.gmsk_mod, 4800 baud, 10 sps @ 48 kHz):
+  GMSK_BT05 — BT=0.5 (D-Star / MSK-equivalent profile)
+  GMSK_BT03 — BT=0.3 (standard GMSK filtering)
+
 Note: FX.25, IL2P, and AX.25 are protocol framings over Bell 202 AFSK.
 They are not separate modulations and do not get separate classifier classes.
-
-Note: D-Star (GMSK BT=0.5, 4800 baud) relies on the RadioML/HISARMOD GMSK label today.
-A dedicated synthetic GMSK class is planned for the next training run to reduce
-GMSK vs NXDN order confusion (see docs/validation_methodology.md).
 
 These are modulation-layer waveforms only. Protocol framing, sync
 words, FEC, and vocoders are NOT reproduced. This is intentional —
@@ -50,7 +50,8 @@ not a source of ground truth.
 
 Verified sources used:
   - gnuradio.analog.frequency_modulator_fc, gnuradio.filter (NBFM chain)
-  - numpy / scipy for direct DSP (aviation AM)
+  - gnuradio.digital.gmsk_mod, digital.psk_mod (GMSK, PSK)
+  - numpy / scipy for direct DSP (aviation AM, GMSK fallback)
 
 Note: ``analog.nbfm_tx(tau=0)`` raises in upstream GNU Radio (division by zero
 in preemphasis). Amateur NBFM here uses the same chain without preemphasis:
@@ -250,6 +251,9 @@ BELL202_BAUD = 1200.0
 BELL202_FM_DEV_HZ = 3500.0
 G3RUH_BAUD = 9600.0
 G3RUH_DEV_HZ = 3500.0
+GMSK_SYMBOL_RATE_HZ = 4800.0
+GMSK_SAMPLES_PER_SYMBOL = 10
+GMSK_MODULATION_INDEX = 0.5
 
 SNR_DB_LEVELS: list[float] = [float(s) for s in range(-20, 32, 2)]
 
@@ -274,6 +278,8 @@ SyntheticMode = Literal[
     "p25",
     "bell202",
     "g3ruh",
+    "gmsk_bt05",
+    "gmsk_bt03",
 ]
 
 MODE_TO_CLASS: dict[SyntheticMode, str] = {
@@ -294,6 +300,8 @@ MODE_TO_CLASS: dict[SyntheticMode, str] = {
     "p25": "P25",
     "bell202": "BELL202",
     "g3ruh": "G3RUH",
+    "gmsk_bt05": "GMSK_BT05",
+    "gmsk_bt03": "GMSK_BT03",
 }
 
 ALL_MODES: tuple[SyntheticMode, ...] = (
@@ -314,6 +322,8 @@ ALL_MODES: tuple[SyntheticMode, ...] = (
     "p25",
     "bell202",
     "g3ruh",
+    "gmsk_bt05",
+    "gmsk_bt03",
 )
 
 PROTOCOL_4FSK_ORDERS: frozenset[str] = frozenset(
@@ -321,7 +331,7 @@ PROTOCOL_4FSK_ORDERS: frozenset[str] = frozenset(
 )
 
 SYNTHETIC_VARIANT_ORDERS: frozenset[str] = PROTOCOL_4FSK_ORDERS | frozenset(
-    {"NFM_CTCSS", "NFM_DCS", "BELL202", "G3RUH"}
+    {"NFM_CTCSS", "NFM_DCS", "BELL202", "G3RUH", "GMSK_BT05", "GMSK_BT03"}
 )
 
 DEFAULT_PSK_SAMPLES_PER_SYMBOL = 8
@@ -342,10 +352,12 @@ class VariantSpec:
         "nbfm_dcs",
         "afsk",
         "fsk2",
+        "gmsk",
     ]
     max_dev: float | None = None
     am_variant: Literal["25k", "833"] | None = None
     psk_order: int | None = None
+    gmsk_bt: float | None = None
 
 
 VARIANT_SPECS: dict[str, VariantSpec] = {
@@ -366,6 +378,8 @@ VARIANT_SPECS: dict[str, VariantSpec] = {
     "NFM_DCS": VariantSpec("NFM_DCS", 7200.0, "nbfm_dcs", max_dev=2500.0),
     "BELL202": VariantSpec("BELL202", 14000.0, "afsk"),
     "G3RUH": VariantSpec("G3RUH", 14000.0, "fsk2"),
+    "GMSK_BT05": VariantSpec("GMSK_BT05", 14000.0, "gmsk", gmsk_bt=0.5),
+    "GMSK_BT03": VariantSpec("GMSK_BT03", 14000.0, "gmsk", gmsk_bt=0.3),
 }
 
 
@@ -831,6 +845,171 @@ def _generate_psk_chunk(
         iq = add_freq_offset(iq, offset, sample_rate_hz)
         iq = add_awgn(iq, snr_db)
     return normalise_unit_power(_complex_to_iq_chunk(iq))
+
+
+def _gmsk_modulate_gnuradio(
+    n_samples: int,
+    sample_rate_hz: float,
+    *,
+    bt: float,
+    samples_per_symbol: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """GMSK via GNU Radio built-in digital.gmsk_mod (not OOT blocks)."""
+    from gnuradio import blocks, digital, gr
+
+    n_bits = (n_samples // samples_per_symbol) + 64
+    data = rng.integers(0, 2, n_bits).astype(int).tolist()
+    tb = gr.top_block()
+    src = blocks.vector_source_b(data, False)
+    mod = digital.gmsk_mod(
+        samples_per_symbol=samples_per_symbol,
+        bt=bt,
+        verbose=False,
+        do_unpack=True,
+    )
+    snk = blocks.vector_sink_c()
+    tb.connect(src, mod, snk)
+    tb.run()
+    out = np.array(snk.data(), dtype=np.complex64)
+    if len(out) < n_samples:
+        reps = int(np.ceil(n_samples / max(len(out), 1)))
+        out = np.tile(out, reps)
+    return out[:n_samples].astype(np.complex64)
+
+
+def _gmsk_modulate_numpy(
+    n_samples: int,
+    sample_rate_hz: float,
+    *,
+    bt: float,
+    samples_per_symbol: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Gaussian-filtered CPFSK approximating GMSK when GNU Radio is unavailable."""
+    filt = _gaussian_filter(bt, 4, samples_per_symbol)
+    symbol_rate_hz = sample_rate_hz / samples_per_symbol
+    deviation_hz = symbol_rate_hz / 4.0  # h=0.5 -> +/-symbol_rate/4
+    n_symbols = n_samples // samples_per_symbol + len(filt)
+    symbols = (rng.integers(0, 2, n_symbols) * 2 - 1).astype(np.float64)
+    freq_sequence = symbols * deviation_hz
+    freq_up = np.repeat(freq_sequence, samples_per_symbol)
+    freq_shaped = np.convolve(freq_up, filt, mode="same")[:n_samples]
+    phase = np.cumsum(2 * np.pi * freq_shaped / sample_rate_hz)
+    return np.exp(1j * phase).astype(np.complex64)
+
+
+def _generate_gmsk_chunk(
+    *,
+    bt: float,
+    sample_rate_hz: float,
+    snr_db: float,
+    use_gnuradio: bool,
+    rng: np.random.Generator,
+    apply_channel: bool = True,
+) -> np.ndarray:
+    """Generate one GMSK chunk (2, 1024) at 4800 baud."""
+    quad_rate = int(sample_rate_hz)
+    sps = int(round(quad_rate / GMSK_SYMBOL_RATE_HZ))
+    need = CHUNK_SAMPLES + sps * 8
+    if use_gnuradio:
+        try:
+            _require_gnuradio()
+            __import__("gnuradio.digital")
+            iq = _gmsk_modulate_gnuradio(
+                need,
+                quad_rate,
+                bt=bt,
+                samples_per_symbol=sps,
+                rng=rng,
+            )
+        except ImportError:
+            iq = _gmsk_modulate_numpy(
+                need, quad_rate, bt=bt, samples_per_symbol=sps, rng=rng
+            )
+    else:
+        iq = _gmsk_modulate_numpy(
+            need, quad_rate, bt=bt, samples_per_symbol=sps, rng=rng
+        )
+    if apply_channel:
+        offset = float(rng.uniform(-DEFAULT_FREQ_OFFSET_HZ, DEFAULT_FREQ_OFFSET_HZ))
+        iq = add_freq_offset(iq, offset, sample_rate_hz)
+        iq = add_awgn(iq, snr_db, rng=rng)
+    return normalise_unit_power(_complex_to_iq_chunk(iq))
+
+
+def verify_gmsk_signal(
+    chunks: np.ndarray,
+    class_name: str,
+    sample_rate_hz: float = DEFAULT_QUAD_RATE_HZ,
+    *,
+    symbol_rate_hz: float = GMSK_SYMBOL_RATE_HZ,
+    bt: float = 0.5,
+) -> None:
+    """Verify GMSK constant envelope and h=0.5 instantaneous-frequency spread."""
+    del bt  # reserved for logging; deviation uses symbol rate (h=0.5)
+    iq = chunks[:, 0, :] + 1j * chunks[:, 1, :]
+    phase = np.unwrap(np.angle(iq), axis=1)
+    inst_freq = np.diff(phase, axis=1) * sample_rate_hz / (2 * np.pi)
+    freq_std = float(inst_freq.std())
+    expected_dev = symbol_rate_hz / 4.0
+    if freq_std < expected_dev * 0.3:
+        raise ValueError(
+            f"{class_name}: inst_freq std {freq_std:.0f} Hz too low for GMSK "
+            f"(expected > {expected_dev * 0.3:.0f} Hz)"
+        )
+    if freq_std > expected_dev * 2.5:
+        raise ValueError(
+            f"{class_name}: inst_freq std {freq_std:.0f} Hz too high for GMSK"
+        )
+    envelope = np.abs(iq)
+    env_variation = float(envelope.std() / max(envelope.mean(), 1e-12))
+    if env_variation > 0.08:
+        raise ValueError(
+            f"{class_name}: envelope variation {env_variation:.3f} too high for GMSK"
+        )
+
+
+def generate_gmsk_bt05(
+    n_chunks: int,
+    *,
+    sample_rate_hz: float = DEFAULT_QUAD_RATE_HZ,
+    snr_db: float = 10.0,
+    use_gnuradio: bool = True,
+    rng: np.random.Generator | None = None,
+    apply_channel: bool = True,
+) -> np.ndarray:
+    """GMSK BT=0.5 (D-Star profile), 4800 baud."""
+    return generate_variant_chunks(
+        "GMSK_BT05",
+        n_chunks,
+        snr_db=snr_db,
+        sample_rate_hz=sample_rate_hz,
+        use_gnuradio=use_gnuradio,
+        rng=rng,
+        apply_channel=apply_channel,
+    )
+
+
+def generate_gmsk_bt03(
+    n_chunks: int,
+    *,
+    sample_rate_hz: float = DEFAULT_QUAD_RATE_HZ,
+    snr_db: float = 10.0,
+    use_gnuradio: bool = True,
+    rng: np.random.Generator | None = None,
+    apply_channel: bool = True,
+) -> np.ndarray:
+    """GMSK BT=0.3 (standard GMSK), 4800 baud."""
+    return generate_variant_chunks(
+        "GMSK_BT03",
+        n_chunks,
+        snr_db=snr_db,
+        sample_rate_hz=sample_rate_hz,
+        use_gnuradio=use_gnuradio,
+        rng=rng,
+        apply_channel=apply_channel,
+    )
 
 
 def _generate_nbfm_chunk(
@@ -1555,6 +1734,19 @@ def generate_variant_chunks(
                 rng=gen,
                 apply_channel=apply_channel,
             )
+    elif spec.kind == "gmsk":
+        bt = spec.gmsk_bt
+        if bt is None:
+            raise ValueError(f"{class_name}: gmsk_bt required")
+        for i in range(n_chunks):
+            chunks[i] = _generate_gmsk_chunk(
+                bt=bt,
+                sample_rate_hz=sample_rate_hz,
+                snr_db=snr_db,
+                use_gnuradio=use_gnuradio,
+                rng=gen,
+                apply_channel=apply_channel,
+            )
     else:
         raise ValueError(f"Unknown variant kind for {class_name}")
     return chunks
@@ -1609,7 +1801,7 @@ def generate_synthetic(
                 )
                 # Occupied-bandwidth (-26 dB) is meaningful for analog FM/AM and
                 # narrow protocol FSK; not for wideband PSK or 9600 baud G3RUH.
-                if spec.kind not in ("psk", "fsk2"):
+                if spec.kind not in ("psk", "fsk2", "gmsk"):
                     verify_bandwidth(
                         ref_chunks,
                         sample_rate_hz,
@@ -1634,6 +1826,14 @@ def generate_synthetic(
                     verify_bell202(ref_chunks, sample_rate_hz)
                 elif spec.kind == "fsk2":
                     verify_g3ruh(ref_chunks, sample_rate_hz)
+                elif spec.kind == "gmsk":
+                    bt_val = spec.gmsk_bt if spec.gmsk_bt is not None else 0.5
+                    verify_gmsk_signal(
+                        ref_chunks,
+                        class_name,
+                        sample_rate_hz,
+                        bt=bt_val,
+                    )
             label = class_names.index(class_name)
             for i in range(chunks_per_snr):
                 labels_list.append(label)

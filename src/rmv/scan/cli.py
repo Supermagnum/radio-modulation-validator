@@ -26,7 +26,14 @@ scan_app = typer.Typer(
 
 @scan_app.command("run")
 def scan_run(
-    directory: Path = typer.Argument(..., help="Root directory to scan for OOT projects"),
+    directory: Optional[Path] = typer.Argument(
+        None,
+        help=(
+            "Parent directory of gr-* OOT repos. "
+            "Default: parent of rmv repo (e.g. github-projects) or [scan].root in .rmv_config.toml. "
+            "Do not use README placeholders like /path/to/github-projects."
+        ),
+    ),
     gr3_prefix: Optional[Path] = typer.Option(None, "--gr3-prefix", help="GNU Radio 3 prefix"),
     gr4_prefix: Optional[Path] = typer.Option(None, "--gr4-prefix", help="GNU Radio 4 prefix"),
     iq_output: Optional[Path] = typer.Option(None, "--iq-output", help="Generated IQ output dir"),
@@ -59,12 +66,15 @@ def scan_run(
         scan_root = resolve_scan_directory(directory)
     except ValueError as exc:
         console.print(f"[red]{exc}[/]")
-        if "~" in str(directory):
+        if directory is not None and "~" in str(directory):
             console.print(
                 "[dim]Note: ~ is your home directory "
                 f"({Path.home()}), not the current working directory.[/]"
             )
         raise typer.Exit(code=1) from None
+
+    if directory is not None and str(directory) != str(scan_root):
+        console.print(f"[dim]Scan root: {scan_root}[/]")
 
     run_scan(
         ScanRunOptions(

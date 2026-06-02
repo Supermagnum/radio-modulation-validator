@@ -120,7 +120,8 @@ def write_project_report(
             "",
             "## Notes",
             "",
-            "- Underlying modulation validated only for: DMR, M17, YSF, D-Star, NXDN, dPMR, P25",
+            "- Underlying modulation validated only for: DMR, M17, YSF, D-Star (GMSK), "
+            "GMSK, NXDN, dPMR, P25",
             "- Protocol framing and FEC not verified",
             "- For gr-sleipnir: 8-carrier QPSK validated using custom plugin "
             "(carrier count, spacing, symbol rate, QPSK constellation checks)",

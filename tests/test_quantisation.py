@@ -16,7 +16,12 @@ from rmv.export_quantised import (
     quantise_model,
     verify_quantised_accuracy,
 )
-from rmv.models_paths import resolve_onnx_model
+from rmv.export_quantised import run_export_quantised
+from rmv.models_paths import (
+    resolve_family_onnx_model,
+    resolve_onnx_model,
+    resolve_order_onnx_model,
+)
 from rmv.scan.backend import detect_cpu_classifier
 
 runner = CliRunner()
@@ -237,16 +242,92 @@ def test_resolve_onnx_model_prefers_int8(tmp_path: Path) -> None:
     fp32.write_bytes(b"fp32")
     int8.write_bytes(b"int8")
     assert resolve_onnx_model(tmp_path, "family_classifier") == int8
+    assert resolve_family_onnx_model(tmp_path) == int8
+
+
+def test_resolve_order_ignores_int8(tmp_path: Path) -> None:
+    fp32 = tmp_path / "order_classifier.onnx"
+    int8 = tmp_path / "order_classifier_int8.onnx"
+    fp32.write_bytes(b"fp32")
+    int8.write_bytes(b"int8")
+    assert resolve_order_onnx_model(tmp_path) == fp32
 
 
 def test_detect_cpu_classifier_int8(tmp_path: Path, mocker: pytest.MockFixture) -> None:
-    int8 = tmp_path / "family_classifier_int8.onnx"
-    int8.write_bytes(b"fake")
+    family_int8 = tmp_path / "family_classifier_int8.onnx"
+    order_fp32 = tmp_path / "order_classifier.onnx"
+    family_int8.write_bytes(b"fake")
+    order_fp32.write_bytes(b"fp32")
     session = MagicMock()
     session.get_inputs.return_value = [MagicMock(name="iq_samples")]
     session.run.return_value = [np.zeros((1, 3), dtype=np.float32)]
     mocker.patch("onnxruntime.InferenceSession", return_value=session)
     assert detect_cpu_classifier(tmp_path) is True
+
+
+def test_run_export_quantised_order_failure_keeps_family(
+    tmp_path: Path,
+    calibration_npz: Path,
+    mocker: pytest.MockFixture,
+) -> None:
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "family_classifier.onnx").write_bytes(b"fp32")
+    (models_dir / "order_classifier.onnx").write_bytes(b"fp32")
+    (models_dir / "family_classifier.meta.json").write_text('{"class_names": ["FM"]}')
+    (models_dir / "order_classifier.meta.json").write_text('{"class_names": ["BPSK"]}')
+
+    family_int8 = models_dir / "family_classifier_int8.onnx"
+    order_int8 = models_dir / "order_classifier_int8.onnx"
+
+    def side_effect(stem: str, *_args: object, **_kwargs: object) -> bool:
+        if stem == "family_classifier":
+            family_int8.write_bytes(b"ok")
+            return True
+        order_int8.write_bytes(b"bad")
+        order_int8.unlink()
+        return False
+
+    mocker.patch(
+        "rmv.export_quantised._quantise_and_verify",
+        side_effect=side_effect,
+    )
+    mocker.patch(
+        "rmv.export_quantised.load_calibration_data",
+        return_value=np.zeros((8, 2, 1024), dtype=np.float32),
+    )
+
+    written = run_export_quantised(calibration_npz, models_dir)
+    assert written == [family_int8]
+    assert not order_int8.is_file()
+
+
+def test_run_export_quantised_family_only(
+    tmp_path: Path,
+    calibration_npz: Path,
+    mocker: pytest.MockFixture,
+) -> None:
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "family_classifier.onnx").write_bytes(b"fp32")
+    (models_dir / "order_classifier.onnx").write_bytes(b"fp32")
+
+    mocker.patch(
+        "rmv.export_quantised._quantise_and_verify",
+        return_value=True,
+    )
+    mocker.patch(
+        "rmv.export_quantised.load_calibration_data",
+        return_value=np.zeros((8, 2, 1024), dtype=np.float32),
+    )
+    written = run_export_quantised(
+        calibration_npz,
+        models_dir,
+        family_only=True,
+        skip_verify=True,
+    )
+    assert len(written) == 1
+    assert written[0].name == "family_classifier_int8.onnx"
 
 
 def test_cli_export_quantised(

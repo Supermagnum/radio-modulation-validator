@@ -143,6 +143,8 @@ SYNTHETIC_CLASSES: list[str] = [
     "P25",
     "BELL202",
     "G3RUH",
+    "GMSK_BT05",
+    "GMSK_BT03",
 ]
 
 SYNTHETIC_TO_FAMILY: dict[str, str] = {
@@ -163,6 +165,8 @@ SYNTHETIC_TO_FAMILY: dict[str, str] = {
     "P25": "FSK",
     "BELL202": "FSK",
     "G3RUH": "FSK",
+    "GMSK_BT05": "FSK",
+    "GMSK_BT03": "FSK",
 }
 
 ORDER_CLASSES: list[str] = sorted(

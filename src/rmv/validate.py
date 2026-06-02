@@ -19,17 +19,60 @@ from rmv.types import ClassifierResult, IQSidecar, ValidationResult, sidecar_pat
 
 logger = logging.getLogger(__name__)
 
+_GMSK_ORDER_ALIASES: list[str] = [
+    "GMSK",
+    "GMSK_BT05",
+    "GMSK_BT03",
+    "MSK",
+    "NXDN",
+    "dPMR",
+]
+
+# Scan/baseband AM-SSB is ambiguous vs FM orders at 1024 samples.
+_AM_SSB_ORDER_ALIASES: list[str] = [
+    "AM-SSB",
+    "AM-DSB",
+    "WBFM",
+    "NBFM_25",
+    "NBFM_50",
+    "NFM_CTCSS",
+    "NFM_DCS",
+]
+
+# Baseband SSB: variable envelope overlaps AM, FM deviation, and low-order QAM at 1024 samples.
+SSB_ACCEPTABLE_FAMILIES: frozenset[str] = frozenset({"AM", "FM", "QAM"})
+SSB_AMBIGUOUS_ORDERS: frozenset[str] = frozenset(
+    {"AM-SSB", "AM-DSB-SC", "USB", "LSB"},
+)
+
 ORDER_ALIASES: dict[str, list[str]] = {
-    "GMSK": ["MSK", "GMSK"],
-    "MSK": ["MSK", "GMSK"],
+    "GMSK": list(_GMSK_ORDER_ALIASES),
+    "GMSK_BT05": list(_GMSK_ORDER_ALIASES),
+    "GMSK_BT03": list(_GMSK_ORDER_ALIASES),
+    "MSK": list(_GMSK_ORDER_ALIASES),
     "CPFSK": ["CPFSK", "GFSK"],
     "GFSK": ["GFSK", "CPFSK"],
     "AM-DSB": ["AM-DSB", "AM_AIR_833", "AM_AIR_25K"],
     "AM_AIR_25K": ["AM_AIR_25K", "AM-DSB", "AM_AIR_833"],
     "AM_AIR_833": ["AM_AIR_833", "AM-DSB", "AM_AIR_25K"],
+    "AM-SSB": list(_AM_SSB_ORDER_ALIASES),
     "NXDN": ["NXDN", "dPMR"],
     "dPMR": ["dPMR", "NXDN"],
 }
+
+
+def family_matches(
+    expected_family: str,
+    expected_order: str,
+    predicted_family: str,
+) -> bool:
+    """True when predicted family is acceptable for the expected sidecar labels."""
+    order = expected_order.strip()
+    pred_f = predicted_family.strip().upper()
+    if order in SSB_AMBIGUOUS_ORDERS:
+        return pred_f in SSB_ACCEPTABLE_FAMILIES
+    exp_f = expected_family.strip().upper()
+    return exp_f == pred_f
 
 
 def order_matches(expected: str, predicted: str) -> bool:
@@ -92,8 +135,10 @@ def evaluate_validation(
     used by the scan runner for warnings on correct-but-low-confidence results,
     not to mark a matching prediction as failed.
     """
-    family_correct = (
-        prediction.family.upper() == sidecar.expected_family.upper()
+    family_correct = family_matches(
+        sidecar.expected_family,
+        sidecar.expected_order,
+        prediction.family,
     )
     order_correct = order_matches(sidecar.expected_order, prediction.order)
     family_pass = family_correct

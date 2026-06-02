@@ -100,6 +100,9 @@ Generic M-FSK blocks are labeled **CPFSK** in training, not `2FSK` / `4FSK` / `8
 | mod_qpsk | PSK | QPSK |
 | mod_2fsk | FSK | CPFSK |
 | mod_4fsk | FSK | CPFSK |
+| mod_gmsk | FSK | GMSK (alias group with GMSK_BT03, MSK) |
+| mod_d_star | FSK | GMSK (D-Star; alias group includes GMSK_BT05) |
+| mod_freedv | FSK | GMSK |
 | mod_am_dsb | AM | AM-DSB |
 
 ### gr-packet-protocols
@@ -107,9 +110,9 @@ Generic M-FSK blocks are labeled **CPFSK** in training, not `2FSK` / `4FSK` / `8
 | Block | expected_family | expected_order |
 |-------|-----------------|----------------|
 | mod_dmr | FSK | DMR |
-| mod_dstar | FSK | GMSK (classifier may predict MSK — accepted alias) |
+| mod_dstar | FSK | GMSK (also accepts GMSK_BT05, GMSK_BT03, MSK after retrain) |
 | mod_ysf | FSK | YSF |
-| mod_p25 | FSK | CPFSK |
+| mod_p25 | FSK | P25 (synthetic C4FM reference in scan; not CPFSK) |
 | mod_m17 | FSK | M17 |
 | mod_nxdn | FSK | NXDN |
 | mod_dpmr | FSK | dPMR |

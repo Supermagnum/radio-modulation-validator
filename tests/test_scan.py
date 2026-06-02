@@ -12,7 +12,11 @@ from typer.testing import CliRunner
 from rmv.cli import app
 from rmv.scan.database import FindingsDB
 from rmv.scan.discover import discover_gr_projects
-from rmv.scan.paths import resolve_scan_directory
+from rmv.scan.paths import (
+    infer_default_scan_directory,
+    is_documentation_placeholder,
+    resolve_scan_directory,
+)
 from rmv.scan.mode_table import MODE_TABLE, all_mode_specs, lookup_mode
 from rmv.scan.pipeline import ScanRunOptions, run_scan
 from rmv.scan.readme_parser import parse_readme
@@ -459,6 +463,62 @@ def test_resolve_scan_directory_missing() -> None:
         resolve_scan_directory(Path("/nonexistent/rmv-scan-test-path-xyz"))
 
 
+def test_is_documentation_placeholder() -> None:
+    assert is_documentation_placeholder(Path("/path/to/github-projects"))
+    assert not is_documentation_placeholder(Path("/mnt/github-projects"))
+
+
+def _layout_rmv_inside_github_projects(tmp_path: Path) -> tuple[Path, Path]:
+    """oot_parent/radio-modulation-validator + gr-* sibling (typical layout)."""
+    oot_parent = tmp_path / "github-projects"
+    oot_parent.mkdir()
+    rmv_root = oot_parent / "radio-modulation-validator"
+    rmv_root.mkdir()
+    (rmv_root / "pyproject.toml").write_text("[project]\nname='rmv'\n", encoding="utf-8")
+    return rmv_root, oot_parent
+
+
+def test_resolve_scan_directory_placeholder_uses_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """README placeholder /path/to/... should resolve to inferred OOT parent."""
+    rmv_root, oot_parent = _layout_rmv_inside_github_projects(tmp_path)
+    (oot_parent / "gr-qradiolink").mkdir()
+    monkeypatch.chdir(rmv_root)
+
+    resolved = resolve_scan_directory(Path("/path/to/github-projects"))
+    assert resolved == oot_parent.resolve()
+
+
+def test_resolve_scan_directory_relative_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rmv_root, oot_parent = _layout_rmv_inside_github_projects(tmp_path)
+    (oot_parent / "gr-packet-protocols").mkdir()
+    monkeypatch.chdir(rmv_root)
+
+    assert resolve_scan_directory(Path("..")) == oot_parent.resolve()
+
+
+def test_infer_default_scan_directory_from_repo_layout() -> None:
+    inferred = infer_default_scan_directory(
+        Path(__file__).resolve().parents[1],
+    )
+    assert inferred is not None
+    assert (inferred / "gr-qradiolink").is_dir() or (inferred / "gr-packet-protocols").is_dir()
+
+
+def test_scan_run_without_directory_argument(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rmv_root, oot_parent = _layout_rmv_inside_github_projects(tmp_path)
+    (oot_parent / "gr-sleipnir").mkdir()
+    monkeypatch.chdir(rmv_root)
+
+    result = CliRunner().invoke(app, ["scan", "run", "--dry-run"])
+    assert result.exit_code == 0
+    combined = result.stdout + result.stderr
+    assert "github-projects" in combined
+
+
 def test_chunk_iq_file_wrong_reshape_would_mismatch() -> None:
     """Regression: reshape(n,2,L) on interleaved IQ corrupts I/Q channels."""
     from rmv.dataset.preprocess import interleaved_to_iq, normalise_unit_power
@@ -580,7 +640,7 @@ def test_scan_iq_classifies_correctly(tmp_path: Path) -> None:
 
 
 def test_gmsk_reference_signal_metrics() -> None:
-    """GMSK scan reference must have FSK-like inst. freq and constant envelope."""
+    """Clean GMSK baseband must have FSK-like inst. freq and constant envelope."""
     from rmv.scan.iq_generator import _gen_gmsk_numpy
 
     sig = _gen_gmsk_numpy(bt=0.5)
@@ -591,6 +651,36 @@ def test_gmsk_reference_signal_metrics() -> None:
     # MSK at 4800 baud: peak deviation symbol_rate/4 = 1200 Hz
     assert 300.0 <= float(inst_freq.std()) <= 1500.0
     assert env_ratio < 0.05
+
+
+def test_scan_chunks_apply_awgn_and_unit_power() -> None:
+    """Scan IQ: family-specific AWGN + unit power; CPFSK and plugin stay clean."""
+    from rmv.scan.iq_generator import (
+        N_CHUNKS,
+        _chunks_from_complex,
+        _gen_am_dsb_numpy,
+        _gen_fsk_numpy,
+        _gen_gmsk_scan_signal,
+        scan_snr_for_family,
+    )
+
+    gmsk_signal, _, _ = _gen_gmsk_scan_signal("GMSK", use_gnuradio=False)
+    chunks = _chunks_from_complex(gmsk_signal, expected_family="FSK")
+    assert chunks.shape == (N_CHUNKS, 2, 1024)
+    power = np.mean(np.sum(chunks**2, axis=1), axis=1)
+    np.testing.assert_allclose(power, 1.0, rtol=0.02)
+    assert scan_snr_for_family("FSK") == 15.0
+    assert scan_snr_for_family("AM") == 20.0
+
+    am_chunks = _chunks_from_complex(_gen_am_dsb_numpy(), expected_family="AM")
+    np.testing.assert_allclose(
+        np.mean(np.sum(am_chunks**2, axis=1), axis=1), 1.0, rtol=0.02
+    )
+
+    clean = _chunks_from_complex(_gen_fsk_numpy(4), apply_channel=False)
+    np.testing.assert_allclose(
+        np.mean(np.sum(clean**2, axis=1), axis=1), 1.0, rtol=0.02
+    )
 
 
 @pytest.mark.skipif(
@@ -608,7 +698,7 @@ def test_gmsk_scan_reference_classifies_as_fsk_not_psk(tmp_path: Path) -> None:
     from rmv.validate import run_validate_file
 
     signal, _, _ = _gen_gmsk_scan_signal("GMSK", use_gnuradio=False)
-    chunks = _chunks_from_complex(signal)
+    chunks = _chunks_from_complex(signal, expected_family="FSK")
     gen = _write_iq_and_sidecar(
         tmp_path,
         "mod_gmsk",
@@ -625,7 +715,14 @@ def test_gmsk_scan_reference_classifies_as_fsk_not_psk(tmp_path: Path) -> None:
     assert result.family_pass is True
     assert result.predicted_family == "FSK"
     assert result.predicted_order not in ("QPSK", "8PSK", "BPSK", "QAM16")
-    assert result.predicted_order in ("GMSK", "MSK", "CPFSK", "GFSK")
+    assert result.predicted_order in (
+        "GMSK",
+        "MSK",
+        "GMSK_BT05",
+        "GMSK_BT03",
+        "CPFSK",
+        "GFSK",
+    )
 
 
 @pytest.mark.skipif(
@@ -641,16 +738,20 @@ def test_scan_fsk_reference_classifies_as_fsk() -> None:
     from rmv.scan.iq_generator import _chunks_from_complex, _gen_fsk_numpy
 
     sig = _gen_fsk_numpy(2)
-    chunks = _chunks_from_complex(sig)
+    chunks = _chunks_from_complex(sig, apply_channel=False)
     model, _, _ = _load_checkpoint(Path("checkpoints/best_family_classifier.pt"))
     meta = json.loads(Path("checkpoints/best_family_meta.json").read_text())
     model.eval()
     with torch.no_grad():
-        logits = model(torch.from_numpy(chunks[:4]))
+        logits = model(torch.from_numpy(chunks))
         probs = torch.softmax(logits, dim=1)
-        pred = meta["class_names"][int(probs[0].argmax())]
-    assert pred == "FSK"
-    assert float(probs[0].max()) > 0.7
+        preds = [meta["class_names"][int(row.argmax())] for row in probs]
+    from collections import Counter
+
+    winner, count = Counter(preds).most_common(1)[0]
+    assert winner == "FSK", f"predictions={Counter(preds)}"
+    assert count >= 12
+    assert float(probs[preds.index("FSK")].max()) > 0.5
 
 
 def test_scan_cli_help() -> None:

@@ -29,6 +29,7 @@ from rmv.dataset.synthetic import (
     verify_bandwidth,
     verify_bell202,
     verify_g3ruh,
+    verify_gmsk_signal,
     verify_nfm_ctcss,
     verify_nfm_dcs,
     verify_p25,
@@ -298,6 +299,61 @@ def test_generate_synthetic_class_names() -> None:
     assert set(ds.class_names) == set(MODE_TO_CLASS.values())
     assert isinstance(ds, IQDataset)
     assert len(ds.samples) == len(MODE_TO_CLASS) * 1 * 1
+
+
+def _gmsk_envelope_var(chunks: np.ndarray) -> float:
+    iq = chunks[:, 0, :] + 1j * chunks[:, 1, :]
+    envelope = np.abs(iq)
+    return float(envelope.std() / max(envelope.mean(), 1e-12))
+
+
+def _gmsk_inst_freq_std(chunks: np.ndarray, sample_rate_hz: float = 48000.0) -> float:
+    iq = chunks[:, 0, :] + 1j * chunks[:, 1, :]
+    phase = np.unwrap(np.angle(iq), axis=1)
+    inst_freq = np.diff(phase, axis=1) * sample_rate_hz / (2 * np.pi)
+    return float(inst_freq.std())
+
+
+@pytest.mark.parametrize("class_name", ["GMSK_BT05", "GMSK_BT03"])
+def test_gmsk_constant_envelope(class_name: str, rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        class_name, 30, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    assert _gmsk_envelope_var(chunks) < 0.08
+    verify_gmsk_signal(chunks, class_name)
+
+
+@pytest.mark.parametrize("class_name", ["GMSK_BT05", "GMSK_BT03"])
+def test_gmsk_inst_freq_range(class_name: str, rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        class_name, 40, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    std = _gmsk_inst_freq_std(chunks)
+    assert 400.0 <= std <= 1000.0
+
+
+def test_gmsk_bt05_wider_than_bt03(rng: np.random.Generator) -> None:
+    bt05 = generate_variant_chunks(
+        "GMSK_BT05", 60, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    bt03 = generate_variant_chunks(
+        "GMSK_BT03", 60, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    assert _gmsk_inst_freq_std(bt05) > _gmsk_inst_freq_std(bt03)
+
+
+def test_gmsk_gr_and_numpy_both_verify(rng: np.random.Generator) -> None:
+    """GNU Radio and numpy GMSK paths both satisfy GMSK verification at +20 dB SNR."""
+    gr_chunks = generate_variant_chunks(
+        "GMSK_BT05", 16, snr_db=20.0, apply_channel=False, use_gnuradio=True, rng=rng
+    )
+    np_chunks = generate_variant_chunks(
+        "GMSK_BT05", 16, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    verify_gmsk_signal(gr_chunks, "GMSK_BT05")
+    verify_gmsk_signal(np_chunks, "GMSK_BT05")
+    for std in (_gmsk_inst_freq_std(gr_chunks), _gmsk_inst_freq_std(np_chunks)):
+        assert 300.0 <= std <= 1200.0
 
 
 def test_nfm_ctcss_subaudible_tone_present(rng: np.random.Generator) -> None:

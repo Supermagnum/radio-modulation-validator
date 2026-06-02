@@ -12,7 +12,12 @@ import onnxruntime as ort
 
 from rmv.checksum_util import verify_model_checksum
 from rmv.constants import FAMILY_CLASSES, ORDER_CLASSES
-from rmv.models_paths import FAMILY_STEM, ORDER_STEM, resolve_onnx_model
+from rmv.models_paths import (
+    ORDER_STEM,
+    int8_onnx_available,
+    resolve_family_onnx_model,
+    resolve_order_onnx_model,
+)
 from rmv.types import ClassifierResult
 
 logger = logging.getLogger(__name__)
@@ -33,8 +38,8 @@ class ModulationClassifier:
         self.confidence_threshold = confidence_threshold
         checksums = checksums_path or models_dir.parent / "checksums.sha256"
 
-        family_path = resolve_onnx_model(models_dir, FAMILY_STEM)
-        order_path = resolve_onnx_model(models_dir, ORDER_STEM)
+        family_path = resolve_family_onnx_model(models_dir)
+        order_path = resolve_order_onnx_model(models_dir)
 
         if verify_checksums and checksums.is_file():
             from rmv.checksum_util import parse_checksums_file
@@ -47,8 +52,14 @@ class ModulationClassifier:
 
         if family_path.name.endswith("_int8.onnx"):
             logger.info("Using INT8 family classifier: %s", family_path.name)
-        if order_path.name.endswith("_int8.onnx"):
-            logger.info("Using INT8 order classifier: %s", order_path.name)
+        else:
+            logger.info("Using FP32 family classifier: %s", family_path.name)
+        if int8_onnx_available(models_dir, ORDER_STEM):
+            logger.warning(
+                "Ignoring %s_int8.onnx; order classifier uses FP32 only.",
+                ORDER_STEM,
+            )
+        logger.info("Using FP32 order classifier: %s", order_path.name)
 
         self.family_names = self._load_class_names(family_path, FAMILY_CLASSES)
         self.order_names = self._load_class_names(order_path, ORDER_CLASSES)

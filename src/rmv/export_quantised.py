@@ -206,6 +206,12 @@ def _load_class_names(meta_path: Path) -> list[str]:
     return []
 
 
+def _discard_failed_int8(int8_path: Path) -> None:
+    if int8_path.is_file():
+        int8_path.unlink()
+        logger.info("Removed failed INT8 model: %s", int8_path.name)
+
+
 def _quantise_and_verify(
     stem: str,
     meta_name: str,
@@ -218,15 +224,20 @@ def _quantise_and_verify(
     skip_verify: bool,
     order_dynamic_fallback: bool,
     models_dir: Path,
-) -> None:
-    """Quantise one model and verify; optionally fall back to dynamic quant for order."""
+) -> bool:
+    """
+    Quantise one model and verify.
+
+    Returns True if INT8 is kept (written and verified, or verify skipped).
+    On verification failure, removes the INT8 file and returns False so FP32 stays deployed.
+    """
     if mode == "static":
         quantise_model(fp32_path, int8_path, calibration)
     else:
         quantise_model_dynamic(fp32_path, int8_path)
 
     if skip_verify:
-        return
+        return True
 
     class_names = _load_class_names(models_dir / meta_name)
     ok = verify_quantised_accuracy(
@@ -237,7 +248,7 @@ def _quantise_and_verify(
         tolerance_pct=tolerance_pct,
     )
     if ok:
-        return
+        return True
 
     if stem == ORDER_STEM and mode == "static" and order_dynamic_fallback:
         logger.warning(
@@ -256,10 +267,19 @@ def _quantise_and_verify(
             logger.info(
                 "Order classifier uses dynamic INT8 (NPU may require static QDQ export on device)."
             )
-            return
+            return True
 
-    msg = f"INT8 verification failed for {stem}"
-    raise RuntimeError(msg)
+    _discard_failed_int8(int8_path)
+    logger.warning(
+        "INT8 quantisation for %s did not meet accuracy tolerance "
+        "(static%s verification failed). "
+        "Keeping deployed model as FP32: %s. "
+        "Do not use a failed INT8 file for inference.",
+        stem,
+        " and dynamic" if stem == ORDER_STEM and order_dynamic_fallback else "",
+        fp32_path.name,
+    )
+    return False
 
 
 def run_export_quantised(
@@ -274,8 +294,14 @@ def run_export_quantised(
     checksums_path: Path | None = None,
     seed: int | None = 42,
     order_dynamic_fallback: bool = True,
+    family_only: bool = False,
+    order_only: bool = False,
 ) -> list[Path]:
-    """Quantise family and order classifiers; optionally run NPU conversion."""
+    """Quantise family and/or order classifiers; optionally run NPU conversion."""
+    if family_only and order_only:
+        msg = "Cannot specify both --family-only and --order-only"
+        raise ValueError(msg)
+
     calibration = load_calibration_data(
         synthetic_path,
         n_chunks=calibration_chunks,
@@ -284,10 +310,15 @@ def run_export_quantised(
     )
 
     written: list[Path] = []
+    failed: list[str] = []
     specs: list[tuple[str, str, QuantizationMode]] = [
         (FAMILY_STEM, "family_classifier.meta.json", "static"),
         (ORDER_STEM, "order_classifier.meta.json", "static"),
     ]
+    if family_only:
+        specs = [specs[0]]
+    elif order_only:
+        specs = [specs[1]]
 
     for stem, meta_name, mode in specs:
         fp32_path = models_dir / f"{stem}.onnx"
@@ -296,7 +327,7 @@ def run_export_quantised(
             raise FileNotFoundError(msg)
 
         int8_path = int8_output_path(models_dir, stem)
-        _quantise_and_verify(
+        if _quantise_and_verify(
             stem,
             meta_name,
             fp32_path,
@@ -307,8 +338,23 @@ def run_export_quantised(
             skip_verify=skip_verify,
             order_dynamic_fallback=order_dynamic_fallback,
             models_dir=models_dir,
+        ):
+            written.append(int8_path)
+        else:
+            failed.append(stem)
+
+    if failed and not written and not skip_verify:
+        msg = (
+            f"INT8 verification failed for all requested models: {', '.join(failed)}. "
+            "FP32 ONNX files are unchanged."
         )
-        written.append(int8_path)
+        raise RuntimeError(msg)
+
+    if failed:
+        logger.warning(
+            "INT8 not deployed for: %s. Inference continues to use FP32 for those stems.",
+            ", ".join(failed),
+        )
 
     if npu:
         from rmv.export_npu import run_export_npu
