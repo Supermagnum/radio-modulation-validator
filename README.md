@@ -704,9 +704,11 @@ Full rules, order aliases, and accepted scan soft fails are documented in
   sidecar; a single wideband capture may not match one order label.
 - **Similar orders within family** (e.g. WBFM vs NBFM) may confuse the order
   classifier when SNR is low or capture is short.
-- **Documented scan soft fails** (not pipeline bugs): SSB↔WBFM on baseband reference,
-  8PSK↔QPSK when order resolution is limited. NXDN↔dPMR and AM-DSB↔aviation AM are
-  accepted via order aliases (see [validation_methodology.md](docs/validation_methodology.md)).
+- **Documented scan soft fails** (not pipeline bugs): **GMSK→NXDN** when expected
+  GMSK lacks dedicated synthetic training data (fix in next retrain, not an alias);
+  SSB↔WBFM on baseband reference; 8PSK↔QPSK when order resolution is limited.
+  NXDN↔dPMR and AM-DSB↔aviation AM are accepted via order aliases (see
+  [validation_methodology.md](docs/validation_methodology.md)).
   See [docs/validation_methodology.md](docs/validation_methodology.md).
 - **CSPB original dataset** must not be used for training (RNG flaw); use R2 only.
 - **No IQ-based training:** Cannot train on contributed `.iq` captures or define new

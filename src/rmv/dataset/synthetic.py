@@ -30,8 +30,9 @@ Packet radio physical layers (numpy/scipy):
 Note: FX.25, IL2P, and AX.25 are protocol framings over Bell 202 AFSK.
 They are not separate modulations and do not get separate classifier classes.
 
-Note: D-Star (GMSK BT=0.5, 4800 baud) is covered by the existing
-GMSK class and is not added separately.
+Note: D-Star (GMSK BT=0.5, 4800 baud) relies on the RadioML/HISARMOD GMSK label today.
+A dedicated synthetic GMSK class is planned for the next training run to reduce
+GMSK vs NXDN order confusion (see docs/validation_methodology.md).
 
 These are modulation-layer waveforms only. Protocol framing, sync
 words, FEC, and vocoders are NOT reproduced. This is intentional —

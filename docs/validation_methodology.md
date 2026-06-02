@@ -63,12 +63,17 @@ aviation capture classified as **AM-DSB**).
 **NXDN** and **dPMR** use identical synthetic 4FSK parameters in training; the
 classifier may predict either order. Aliases are symmetric: each expected label
 accepts the other. **GMSK** is not aliased to **NXDN** — they are different
-modulations and require training data, not validation aliases.
+modulations (continuous-phase GMSK vs 4FSK).
 
 ## Known remaining soft fails
 
 These are documented limitations, not scan pipeline bugs:
 
+- **GMSK vs NXDN**: Expected **GMSK** (or D-Star GMSK layer) may be classified as
+  **NXDN** because training lacks a dedicated synthetic **GMSK** class at 4800 baud;
+  scan reference uses MSK/GMSK paths but the order head was trained mainly on RadioML
+  MSK and protocol 4FSK labels. **Fix:** add a dedicated **GMSK** synthetic order in
+  the next training run; do not add a validation alias.
 - **SSB vs WBFM**: Baseband SSB reference can be ambiguous at order level (WBFM).
 - **8PSK vs QPSK**: Training and model resolution limit; left as soft fail when
   order does not match.
