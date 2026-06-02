@@ -58,9 +58,6 @@ MODE_EXCLUSION_REASONS: dict[str, str] = {
     "DSSS": "Spread spectrum; designed to appear as noise — classifier output not meaningful",
     "GDSS": "Spread spectrum (GDSS); designed to appear as noise — classifier output not meaningful",
     "LDPC": "FEC codec only; not a modulator order",
-    "IL2P": "Protocol framing; not a modulator order",
-    "FX.25": "Protocol framing; not a modulator order",
-    "AX.25": "Link-layer protocol; not a modulator order",
 }
 
 

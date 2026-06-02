@@ -13,6 +13,9 @@ from rmv.dataset.synthetic import (
     MODE_TO_CLASS,
     PROTOCOL_4FSK_ORDERS,
     VARIANT_SPECS,
+    _envelope_variation,
+    _fm_demod_audio,
+    _nrzi_encode,
     aviation_carrier_to_sideband_ratio,
     generate_aviation_am_25k,
     generate_aviation_am_833,
@@ -24,6 +27,11 @@ from rmv.dataset.synthetic import (
     validate_nbfm_params,
     verify_4fsk_signal,
     verify_bandwidth,
+    verify_bell202,
+    verify_g3ruh,
+    verify_nfm_ctcss,
+    verify_nfm_dcs,
+    verify_p25,
 )
 from rmv.types import IQDataset
 
@@ -290,3 +298,86 @@ def test_generate_synthetic_class_names() -> None:
     assert set(ds.class_names) == set(MODE_TO_CLASS.values())
     assert isinstance(ds, IQDataset)
     assert len(ds.samples) == len(MODE_TO_CLASS) * 1 * 1
+
+
+def test_nfm_ctcss_subaudible_tone_present(rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        "NFM_CTCSS", 40, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    verify_nfm_ctcss(chunks)
+
+
+def test_nfm_dcs_near_dc_energy(rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        "NFM_DCS", 40, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    verify_nfm_dcs(chunks)
+
+
+def test_nfm_ctcss_constant_envelope(rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        "NFM_CTCSS", 20, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    assert _envelope_variation(chunks) < 0.05
+
+
+def test_nfm_dcs_constant_envelope(rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        "NFM_DCS", 20, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    assert _envelope_variation(chunks) < 0.05
+
+
+def test_p25_deviation_range(rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        "P25", 40, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    verify_p25(chunks)
+
+
+def test_p25_distinct_from_dmr(rng: np.random.Generator) -> None:
+    p25 = generate_variant_chunks(
+        "P25", 60, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    dmr = generate_variant_chunks(
+        "DMR", 60, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    assert _inst_freq_std_hz(p25) < _inst_freq_std_hz(dmr)
+
+
+def test_bell202_two_tones_present(rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        "BELL202", 40, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    verify_bell202(chunks)
+
+
+def test_bell202_constant_envelope(rng: np.random.Generator) -> None:
+    chunks = generate_variant_chunks(
+        "BELL202", 20, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    assert _envelope_variation(chunks) < 0.05
+
+
+def test_g3ruh_modulation_wider_than_dmr(rng: np.random.Generator) -> None:
+    """9600 baud / +/-3500 Hz dev produces wider inst-freq spread than 4800 baud DMR."""
+    g3 = generate_variant_chunks(
+        "G3RUH", 60, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    dmr = generate_variant_chunks(
+        "DMR", 60, snr_db=20.0, apply_channel=False, use_gnuradio=False, rng=rng
+    )
+    verify_g3ruh(g3)
+    assert _inst_freq_std_hz(g3) > _inst_freq_std_hz(dmr) * 1.05
+
+
+def test_bell202_nrzi_encoding() -> None:
+    bits = np.array([0, 1, 0, 0, 1, 1, 0], dtype=int)
+    nrzi = _nrzi_encode(bits)
+    transitions = int(np.sum(np.diff(nrzi) != 0))
+    assert 0 < transitions <= len(bits)
+
+
+@pytest.mark.parametrize("class_name", sorted(PROTOCOL_4FSK_ORDERS))
+def test_protocol_4fsk_includes_p25(class_name: str) -> None:
+    assert class_name in VARIANT_SPECS

@@ -13,7 +13,7 @@ from scipy.signal import hilbert, lfilter
 
 from rmv.dataset.preprocess import normalise_unit_power
 from rmv.dataset.synthetic import (
-    PROTOCOL_4FSK_ORDERS,
+    SYNTHETIC_VARIANT_ORDERS,
     _gaussian_filter,
     _generate_nbfm_chunk,
     _generate_psk_chunk,
@@ -136,8 +136,8 @@ def _gen_psk_scan_chunks(order: int, *, use_gnuradio: bool) -> np.ndarray:
     return chunks
 
 
-def _gen_protocol_4fsk_scan_chunks(class_name: str) -> np.ndarray:
-    """DMR/M17/YSF/NXDN/dPMR reference IQ from protocol-accurate synthetic generator."""
+def _gen_synthetic_scan_chunks(class_name: str) -> np.ndarray:
+    """Reference IQ from rmv.dataset.synthetic (protocol 4FSK, squelch, packet)."""
     rng = np.random.default_rng(42)
     return generate_variant_chunks(
         class_name,
@@ -358,10 +358,13 @@ def _generate_signal(
     if spec.mode_name in ("GMSK", "FreeDV", "D-Star", "DSTAR"):
         msg = "GMSK modes use _gen_gmsk_scan_signal(); call that path directly"
         raise RuntimeError(msg)
-    if spec.expected_order in PROTOCOL_4FSK_ORDERS:
-        msg = "Protocol 4FSK uses _gen_protocol_4fsk_scan_chunks(); call that path directly"
+    if spec.expected_order in SYNTHETIC_VARIANT_ORDERS:
+        msg = "Synthetic orders use _gen_synthetic_scan_chunks(); call that path directly"
         raise RuntimeError(msg)
-    if spec.mode_name in ("2FSK", "P25"):
+    if spec.generation_method == "synthetic":
+        msg = "Synthetic mode uses _gen_synthetic_scan_chunks(); call that path directly"
+        raise RuntimeError(msg)
+    if spec.mode_name in ("2FSK",):
         n_tones = 2 if spec.mode_name == "2FSK" else 4
         return _gen_fsk_numpy(n_tones), "numpy", "none"
     if spec.mode_name == "4FSK":
@@ -521,8 +524,11 @@ def generate_iq_for_project(
             chunks = _gen_psk_scan_chunks(8, use_gnuradio=use_gr)
             method = "gr3_builtin" if use_gr else "numpy"
             env_label = "gr3" if use_gr else "none"
-        elif spec.expected_order in PROTOCOL_4FSK_ORDERS:
-            chunks = _gen_protocol_4fsk_scan_chunks(spec.expected_order)
+        elif (
+            spec.generation_method == "synthetic"
+            or spec.expected_order in SYNTHETIC_VARIANT_ORDERS
+        ):
+            chunks = _gen_synthetic_scan_chunks(spec.expected_order)
             method = "synthetic"
             env_label = "none"
         elif spec.expected_order == "GMSK" or spec.mode_name in (
