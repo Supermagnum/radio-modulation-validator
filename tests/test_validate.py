@@ -75,6 +75,21 @@ def test_order_matches_cpfsk_gfsk() -> None:
     assert not order_matches("CPFSK", "QPSK")
 
 
+def test_order_matches_am_dsb_aviation() -> None:
+    assert order_matches("AM-DSB", "AM_AIR_833")
+    assert order_matches("AM_AIR_25K", "AM-DSB")
+    assert order_matches("AM_AIR_833", "AM_AIR_25K")
+    assert not order_matches("AM-DSB", "WBFM")
+
+
+def test_order_matches_nxdn_dpmr_symmetric() -> None:
+    assert order_matches("NXDN", "dPMR")
+    assert order_matches("dPMR", "NXDN")
+    assert order_matches("NXDN", "NXDN")
+    assert not order_matches("NXDN", "GMSK")
+    assert not order_matches("GMSK", "NXDN")
+
+
 def test_evaluate_gmsk_predicted_msk_passes() -> None:
     sidecar = IQSidecar(
         source="test",

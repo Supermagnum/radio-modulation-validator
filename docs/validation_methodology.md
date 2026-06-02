@@ -25,6 +25,11 @@ trained on under a different name:
 | MSK | MSK, GMSK |
 | CPFSK | CPFSK, GFSK |
 | GFSK | GFSK, CPFSK |
+| AM-DSB | AM-DSB, AM_AIR_25K, AM_AIR_833 |
+| AM_AIR_25K | AM_AIR_25K, AM-DSB, AM_AIR_833 |
+| AM_AIR_833 | AM_AIR_833, AM-DSB, AM_AIR_25K |
+| NXDN | NXDN, dPMR |
+| dPMR | dPMR, NXDN |
 
 ### GMSK and MSK
 
@@ -46,12 +51,24 @@ keep their exact trained order labels and are not remapped to CPFSK.
 Packet link-layer names (**AX.25**, **APRS**, **FX.25**, **IL2P**) map to
 **BELL202** (Bell 202 AFSK physical layer only; framing is not verified).
 
+### Aviation and broadcast AM (DSB)
+
+**AM-DSB**, **AM_AIR_25K**, and **AM_AIR_833** are all full-carrier DSB-AM in the
+**AM** family; they differ mainly in audio bandwidth and channel spacing. At order
+level, any of these labels is accepted when another was expected (for example
+aviation capture classified as **AM-DSB**).
+
+### NXDN and dPMR
+
+**NXDN** and **dPMR** use identical synthetic 4FSK parameters in training; the
+classifier may predict either order. Aliases are symmetric: each expected label
+accepts the other. **GMSK** is not aliased to **NXDN** — they are different
+modulations and require training data, not validation aliases.
+
 ## Known remaining soft fails
 
 These are documented limitations, not scan pipeline bugs:
 
-- **NXDN vs dPMR**: Synthetic waveforms use identical modulation parameters; the
-  classifier may predict either order.
 - **SSB vs WBFM**: Baseband SSB reference can be ambiguous at order level (WBFM).
 - **8PSK vs QPSK**: Training and model resolution limit; left as soft fail when
   order does not match.

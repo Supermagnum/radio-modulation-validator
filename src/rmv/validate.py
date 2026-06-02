@@ -24,6 +24,11 @@ ORDER_ALIASES: dict[str, list[str]] = {
     "MSK": ["MSK", "GMSK"],
     "CPFSK": ["CPFSK", "GFSK"],
     "GFSK": ["GFSK", "CPFSK"],
+    "AM-DSB": ["AM-DSB", "AM_AIR_833", "AM_AIR_25K"],
+    "AM_AIR_25K": ["AM_AIR_25K", "AM-DSB", "AM_AIR_833"],
+    "AM_AIR_833": ["AM_AIR_833", "AM-DSB", "AM_AIR_25K"],
+    "NXDN": ["NXDN", "dPMR"],
+    "dPMR": ["dPMR", "NXDN"],
 }
 
 
