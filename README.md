@@ -52,6 +52,10 @@ for the exact layout and sidecar JSON.
 - [Retraining models](#retraining-models)
 - [Dataset version pinning (released models)](#dataset-version-pinning-released-models)
 - [Validation methodology](#validation-methodology)
+- [Understanding validation results](#understanding-validation-results)
+- [Why the classifier needs training data](#why-the-classifier-needs-training-data)
+- [Soft fails vs hard fails](#soft-fails-vs-hard-fails)
+- [The validation boundary](#the-validation-boundary)
 - [NPU deployment (INT8)](#npu-deployment-int8)
 - [Known limitations](#known-limitations)
 - [Development](#development)
@@ -731,39 +735,158 @@ uv run rmv export-npu --calibration datasets/synthetic/synthetic.npz   # on K3 o
 
 ## Validation methodology
 
-Full rules, order aliases, and accepted scan soft fails are documented in
-[docs/validation_methodology.md](docs/validation_methodology.md). Summary:
+Full rules, order aliases, and scan reference mapping are documented in
+[docs/validation_methodology.md](docs/validation_methodology.md). Per-chunk predictions
+are combined by **majority vote** per file. `rmv validate` exit codes: **0** pass,
+**1** soft fail, **2** hard fail. JSON outputs use `"schema_version": "1.0"`.
 
-1. **Family and order pass** — predicted labels must match the sidecar
-   `expected_family` / `expected_order` (after aliases such as GMSK / GMSK_BT05 / GMSK_BT03 / MSK,
-   CPFSK↔GFSK, NXDN↔dPMR, AM-DSB↔aviation AM). Confidence above the scan threshold is **not**
-   required for pass.
-2. **Warnings** — correct label with low confidence may still pass; scan may record a
-   warning issue.
-3. **Aggregation** — per-chunk predictions are combined by **majority vote** per file.
-4. **Hard fail (exit 2)** — wrong family, or family confidence below **0.40**.
-5. **Soft fail (exit 1)** — family or order label mismatch (after aliases).
+The sections below explain what those results mean, what the tool cannot validate,
+and how this relates to unit tests and retraining.
 
-`rmv validate` exit codes: 0 pass, 1 soft fail, 2 hard fail. JSON outputs use
-`"schema_version": "1.0"`.
+## Understanding validation results
+
+The IQ classifier validates at the **physical layer only** — it checks that a
+modulator block produces a signal whose IQ characteristics match the expected
+modulation family (FM, FSK, PSK, QAM, AM) and order (NBFM_25, DMR, BELL202, etc.).
+It does not validate:
+
+- Protocol framing, sync words, or FEC correctness
+- Codec output (IMBE, Codec2, AMBE, OPUS)
+- Link-layer state machines (AX.25, IL2P, FX.25 frame structure)
+- Reed-Solomon or LDPC decoder correctness
+- End-to-end encode/decode round-trips
+
+For protocol-level correctness, the project's own unit tests (ctest, pytest) are
+the authoritative source. The IQ classifier and unit tests are complementary, not
+interchangeable.
+
+**Example:** gr-packet-protocols passes 13/13 unit tests covering Reed-Solomon codec,
+AX.25/FX.25/IL2P encoder/decoder round-trips, and HDLC framing correctness. The IQ
+validator shows 11/12 with a mod_8psk soft fail — this reflects a classifier training
+gap (8PSK is underrepresented in the training data), not a bug in the block. The unit
+tests are the correct tool for validating protocol correctness.
+
+## Why the classifier needs training data
+
+The classifier cannot identify a modulation it has not been trained on. Adding a
+new modulation order to the training set requires:
+
+1. **Synthetic IQ data generation** — generate labelled IQ samples using verified
+   GNU Radio built-in blocks or numpy/scipy. Never use the OOT module under validation
+   to generate its own reference data — that makes the validation circular.
+
+2. **Retraining the order classifier** — run `rmv train` with the new synthetic data
+   included. The family classifier (6 classes) rarely needs retraining; the order
+   classifier (currently 50 classes) is retrained when new modes are added.
+
+3. **Re-export and re-quantise** — export the new ONNX models, regenerate the INT8
+   family classifier (`rmv export-quantised --family-only`), update checksums.
+
+4. **Re-run the scan** — delete `.scan_iq/` and re-run `rmv scan run` to pick up the
+   new classifier.
+
+Current training data sources and the modes they cover are documented in
+[docs/dataset_preparation.md](docs/dataset_preparation.md).
+
+**Current known training gaps** (modes not yet in the order classifier):
+
+| Mode | Gap | Impact |
+|------|-----|--------|
+| 8PSK at 12,500 baud | Not in training data | gr-packet-protocols mod_8psk soft fail |
+| SSTV (modes 210–223) | Not in training data | No SSTV validation possible |
+| FreeDV 700D/1600/2020 | OFDM-based, not modelled | FreeDV classifies as generic FSK |
+| WFM Stereo (mode 11) | Not in training data | Classifies as WBFM |
+| CW / Morse | Short observation window | Not classifiable at 1024 samples |
+
+Adding any of these requires generating synthetic IQ and retraining. See
+[docs/contributing_iq_samples.md](docs/contributing_iq_samples.md) for contributed
+capture guidelines.
+
+## Soft fails vs hard fails
+
+**Hard fail** (exit code 2): the predicted modulation family is completely wrong —
+for example an FSK block predicting AM. This indicates either a genuinely broken
+modulator or a systematic error in the scan IQ generator. Investigate before trusting
+the block.
+
+**Soft fail** (exit code 1): the family is correct but the order prediction does not
+match — for example 8PSK predicting QPSK, or NXDN predicting dPMR. This is almost
+always a classifier training gap or a known physical ambiguity (NXDN and dPMR use
+identical modulation parameters and cannot be distinguished at the IQ level). Check
+the known limitations table and the unit tests before concluding the block is broken.
+
+**Warning**: the prediction is correct but confidence is below 0.70. Common for modes
+in the NXDN/dPMR/GMSK cluster where waveforms overlap. The block is producing the
+right modulation but the classifier is uncertain — not a block bug.
+
+**Pass**: prediction matches expected family and order (after aliases). Confidence
+above 0.70 is typical but **not** required for pass; low-confidence correct labels
+still pass and may generate a warning issue in scan.
+
+Label aliases (GMSK family, NXDN↔dPMR, AM-SSB family/order overlap) are listed in
+[docs/validation_methodology.md](docs/validation_methodology.md).
+
+## The validation boundary
+
+Reference IQ for scan validation is generated using:
+
+- GNU Radio built-in blocks (`gnuradio.analog`, `gnuradio.digital`)
+- numpy/scipy direct DSP
+
+**The OOT module under validation is never used to generate its own reference data.**
+Using gr-qradiolink's NBFM block to validate gr-qradiolink's NBFM block would make
+the result meaningless. This boundary is enforced by an AST-based test
+(`test_no_oot_imports`) that runs in CI.
+
+The public datasets (RadioML 2016.10A, CSPB.ML.2018R2) provide cross-validation from
+independent toolchains. The synthetic data fills gaps where public datasets have no
+coverage. See [Training datasets](#training-datasets) and
+[Why synthetic training data is used](#why-synthetic-training-data-is-used).
 
 ## Known limitations
 
+**Classifier limitations:**
+
+- The order classifier cannot identify modulations not in its training set. Adding
+  new modes requires retraining (see [Why the classifier needs training data](#why-the-classifier-needs-training-data)).
+- At 1024 samples (21 ms at 48 kHz), some modes are physically indistinguishable:
+  NXDN and dPMR (identical waveforms), GMSK variants at similar symbol rates.
+- SSB (AM-SSB) is genuinely ambiguous at baseband — the classifier may predict AM, FM,
+  or QAM family. All are accepted as valid predictions. This is a property of the
+  signal, not a bug.
+- High-order FSK (128FSK, 256FSK) may be confused with lower-order variants. Family-level
+  FSK classification is reliable; order-level discrimination degrades above 8FSK.
+
+**Scope limitations:**
+
+- Protocol framing, FEC, and codec correctness require unit tests, not IQ
+  classification. The tool validates physical layer only.
+- Spread-spectrum modes (DSSS, GDSS) are excluded by design — they are designed to look
+  like noise and classifier output is meaningless for them.
+- LDPC, Reed-Solomon, and other FEC codecs are not modulations and cannot be validated
+  by IQ classification.
+- CW (Morse) requires longer observation windows than 1024 samples at typical beacon
+  speeds and is not reliably classifiable.
 - **Custom modes from one wideband `.iq` file:** Cannot detect a bespoke multi-carrier
-  or other custom mode as its own class; only generic family/order labels apply, with
-  low trust on non-isolated carriers. See **Custom and multi-carrier modes (IQ)** above.
+  or other custom mode as its own class; only generic family/order labels apply. See
+  [Custom and multi-carrier modes (IQ)](#custom-and-multi-carrier-modes-iq).
 - **gr-sleipnir multi-carrier:** Validate each carrier with a separate IQ file and
-  sidecar; a single wideband capture may not match one order label.
-- **Similar orders within family** (e.g. WBFM vs NBFM) may confuse the order
-  classifier when SNR is low or capture is short.
-- **Documented scan soft fails** (not pipeline bugs): **GMSK→NXDN** until the order model is
-  retrained with synthetic `GMSK_BT05` / `GMSK_BT03` (validation aliases are ready; do not alias
-  NXDN); SSB↔WBFM on baseband reference; 8PSK↔QPSK when order resolution is limited. Resolved
-  via aliases (not training): NXDN↔dPMR, AM-DSB↔aviation AM, GMSK family↔MSK. See
-  [docs/validation_methodology.md](docs/validation_methodology.md).
-- **CSPB original dataset** must not be used for training (RNG flaw); use R2 only.
+  sidecar, or use the `sleipnir_8qpsk` plugin for the composite case.
 - **No IQ-based training:** Cannot train on contributed `.iq` captures or define new
-  classes without extending the codebase and supplying a labelled dataset.
+  classes without extending the codebase and supplying labelled dataset sources.
+- **CSPB original dataset** must not be used for training (RNG flaw); use R2 only.
+
+**Infrastructure limitations:**
+
+- The INT8 order classifier cannot be produced with current calibration data (50
+  classes exceed static QDQ accuracy threshold). The order classifier deploys as FP32
+  ONNX (~2.7 MB, ~15 ms CPU). The family classifier deploys as INT8 (~703 KB, ~5 ms CPU).
+  See [models/README.md](models/README.md) and [NPU deployment (INT8)](#npu-deployment-int8).
+- SpacemiT NPU `.nb` model files require the SpacemiT NPU SDK for conversion, which is
+  not available in the CI environment. Convert on the K3 target using `rmv export-npu`.
+- The database (`.rmv_findings.db`) accumulates issues from all scan runs. Use
+  `rmv scan purge --keep-latest` or `rmv scan issues --since <timestamp>` to view only
+  current results.
 
 ## Development
 
