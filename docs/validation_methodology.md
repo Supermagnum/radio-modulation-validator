@@ -35,13 +35,16 @@ reference signals as MSK. This is a correct result at the signal level.
 
 ### Generic FSK and CPFSK
 
-Scan modes `2FSK`, `4FSK`, `8FSK`, and `P25` use **CPFSK** as the expected order in
-the mode table. RadioML uses CPFSK as the generic continuous-phase FSK label; the
+Scan modes `2FSK`, `4FSK`, and `8FSK` use **CPFSK** as the expected order in the
+mode table. RadioML uses CPFSK as the generic continuous-phase FSK label; the
 numpy reference generator produces CPFSK-like waveforms that the order classifier
 labels as CPFSK, not as `2FSK` / `4FSK` / `8FSK` order strings.
 
-Protocol-specific modes (**DMR**, **M17**, **YSF**, **NXDN**, **dPMR**) keep their
-exact trained order labels and are not remapped to CPFSK.
+Protocol-specific modes (**DMR**, **M17**, **YSF**, **NXDN**, **dPMR**, **P25**)
+keep their exact trained order labels and are not remapped to CPFSK.
+
+Packet link-layer names (**AX.25**, **APRS**, **FX.25**, **IL2P**) map to
+**BELL202** (Bell 202 AFSK physical layer only; framing is not verified).
 
 ## Known remaining soft fails
 
